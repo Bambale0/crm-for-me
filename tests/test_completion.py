@@ -73,9 +73,8 @@ async def test_search_fields_case_insensitive_and_literal_wildcards(session):
     assert (await search.search("   ")).clients == []
 
 
-async def test_done_rejected_after_issue_keeps_task_new(session):
+async def test_done_after_issue_creates_new_draft(session):
     from app.models.enums import TaskStatus
-    from app.services.errors import InvoiceIssuedError
     from app.utils.time import current_month
 
     client = await ClientService(session).create("Client")
@@ -84,10 +83,11 @@ async def test_done_rejected_after_issue_keeps_task_new(session):
     await billing.add_manual_item(period.id, "Work", Decimal("100"))
     await billing.issue(period)
     task = await TaskService(session).create(client.id, "Late work", amount="100")
-    with pytest.raises(InvoiceIssuedError):
-        await TaskService(session).set_status(task, TaskStatus.DONE)
+    await TaskService(session).set_status(task, TaskStatus.DONE)
     await session.flush()
-    assert (task.status, task.completed_at, task.billing_period_id) == ("NEW", None, None)
+    assert task.status == "DONE" and task.completed_at is not None
+    assert task.billing_period_id != period.id
+    assert (await billing.totals(period)).invoice_total == Decimal("100")
 
 
 async def test_source_survives_description_edit(session):

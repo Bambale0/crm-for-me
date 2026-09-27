@@ -173,14 +173,6 @@ class TaskService:
             raise InvalidTransitionError(f"Cannot transition {current} -> {new_status}")
 
         now = now_utc()
-        if new_status == TaskStatus.DONE:
-            year, month = local_month(now, self.tz)
-            period = await self.billing.get_or_create_period(task.client_id, year, month)
-            period = await self.billing.lock_period(period.id)
-            if period.status != BillingStatus.DRAFT.value:
-                raise InvoiceIssuedError(
-                    "Счёт за этот месяц уже выставлен; задача оставлена без изменений"
-                )
         task.status = new_status.value
 
         if new_status == TaskStatus.IN_PROGRESS:
@@ -201,14 +193,6 @@ class TaskService:
     async def _assign_to_period(self, task: Task) -> None:
         year, month = local_month(task.completed_at, self.tz)
         period = await self.billing.get_or_create_period(task.client_id, year, month)
-        if period.status != BillingStatus.DRAFT.value:
-            # The month's invoice is already issued; its items are a frozen
-            # snapshot. Booking the task here would silently drop the revenue,
-            # so refuse the transition and let the owner decide what to do.
-            raise InvoiceIssuedError(
-                f"Расчётный период {month:02d}.{year} уже выставлен "
-                f"(status={period.status}); задача не может быть закрыта в этот счёт"
-            )
         task.billing_period_id = period.id
         await self.session.flush()
         await self.billing.reconcile_draft(period)

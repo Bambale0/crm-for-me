@@ -16,7 +16,7 @@ from app.models.enums import BillingStatus, InvoiceItemSource, TaskStatus
 from app.models.recurring import RecurringCharge
 from app.models.task import Task
 from app.repositories.billing import BillingRepository
-from app.services.errors import InvalidTransitionError, NotFoundError
+from app.services.errors import InvalidAmountError, InvalidTransitionError, NotFoundError
 from app.services.validation import lock_client
 from app.utils.money import to_decimal
 from app.utils.time import current_month, local_month, now_utc
@@ -48,7 +48,7 @@ class BillingService:
 
     # ── periods ───────────────────────────────────────────────────────────
     async def get_or_create_period(self, client_id: int, year: int, month: int) -> BillingPeriod:
-        """Idempotent: returns the single (client, year, month) period."""
+        """Return the open draft; issued invoices never block another invoice."""
         date(year, month, 1)
         await lock_client(self.session, client_id)
         existing = await self.billing.get_for_client_month(client_id, year, month)
@@ -99,7 +99,18 @@ class BillingService:
         )
         clients = sorted({c.client_id for c in charges if charge_active_in_month(c, year, month)})
         for cid in clients:
-            period = await self.get_or_create_period(cid, year, month)
+            await lock_client(self.session, cid)
+            period = await self.billing.get_for_client_month(cid, year, month)
+            billed = await self._billed_recurring_ids(
+                cid, year, month, period.id if period else None
+            )
+            pending = any(
+                c.client_id == cid and c.id not in billed and charge_active_in_month(c, year, month)
+                for c in charges
+            )
+            if period is None and not pending:
+                continue
+            period = period or await self.get_or_create_period(cid, year, month)
             await self.reconcile_draft(period)
 
     async def current_period(self, client_id: int, tz_name: str) -> BillingPeriod:
@@ -108,6 +119,29 @@ class BillingService:
 
     async def list_for_month(self, year: int, month: int) -> list[BillingPeriod]:
         return await self.billing.list_for_month(year, month)
+
+    async def list_for_client(self, client_id: int) -> list[BillingPeriod]:
+        return await self.billing.list_for_client(client_id)
+
+    async def _billed_recurring_ids(
+        self, client_id: int, year: int, month: int, exclude_id: int | None = None
+    ) -> set[int]:
+        # The client lock serializes issue/generation across all that client's invoices.
+        stmt = (
+            select(InvoiceItem.source_id)
+            .join(BillingPeriod)
+            .where(
+                BillingPeriod.client_id == client_id,
+                BillingPeriod.year == year,
+                BillingPeriod.month == month,
+                BillingPeriod.status != BillingStatus.CANCELLED.value,
+                InvoiceItem.source_type == InvoiceItemSource.RECURRING_CHARGE.value,
+                InvoiceItem.source_id.is_not(None),
+            )
+        )
+        if exclude_id is not None:
+            stmt = stmt.where(BillingPeriod.id != exclude_id)
+        return set((await self.session.scalars(stmt)).all())
 
     # ── reconciliation ────────────────────────────────────────────────────
     async def reconcile_draft(self, period: BillingPeriod) -> BillingPeriod:
@@ -184,7 +218,14 @@ class BillingService:
         charges = list(
             (await self.session.scalars(stmt.execution_options(populate_existing=True))).all()
         )
-        return [c for c in charges if charge_active_in_month(c, period.year, period.month)]
+        billed = await self._billed_recurring_ids(
+            period.client_id, period.year, period.month, period.id
+        )
+        return [
+            c
+            for c in charges
+            if c.id not in billed and charge_active_in_month(c, period.year, period.month)
+        ]
 
     # ── manual items ──────────────────────────────────────────────────────
     async def add_manual_item(
@@ -219,10 +260,22 @@ class BillingService:
         if period.status != BillingStatus.DRAFT.value:
             raise InvalidTransitionError(f"Cannot issue period in {period.status}")
         await self.reconcile_draft(period)
+        if (await self.totals(period)).invoice_total <= 0:
+            raise InvalidAmountError(
+                "Нельзя выставить счёт на 0 ₽. Сначала отметьте задачу «Выполнено» или добавьте услугу."
+            )
         period.status = BillingStatus.ISSUED.value
         period.issued_at = now_utc()
         await self.session.flush()
         return period
+
+    async def ensure_payable(self, period: BillingPeriod) -> Totals:
+        totals = await self.totals(period)
+        if totals.debt <= 0:
+            raise ValueError("Долга нет — оплата по этому счёту не требуется.")
+        if period.status not in (BillingStatus.ISSUED.value, BillingStatus.PARTIALLY_PAID.value):
+            raise ValueError("Сначала выставьте счёт, затем внесите оплату.")
+        return totals
 
     # ── totals ────────────────────────────────────────────────────────────
     async def totals(self, period: BillingPeriod) -> Totals:

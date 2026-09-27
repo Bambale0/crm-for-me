@@ -18,7 +18,7 @@ crm-for-me — личный Telegram CRM-бот владельца для учё
 → выполнить
 → сумма попала в текущий расчётный месяц
 → регулярные услуги добавились в этот же период
-→ сформировать общий месячный счёт
+→ сформировать счёт по требованию
 → выставить счёт
 → внести частичную или полную оплату
 → долг стал 0
@@ -430,11 +430,17 @@ RecurringCharge
 
 Генерация регулярных начислений должна быть идемпотентной.
 
-Повторный запуск одного периода не может начислить аренду сервера дважды.
+Повторный запуск и следующий счёт в том же месяце не могут начислить аренду сервера дважды.
 
 ## 16. Расчётные периоды
 
-У клиента должен быть максимум один основной период на месяц:
+По требованию владельца счета выставляются в любой момент, несколько раз в месяц.
+Месяц сохраняется только как расчётная группировка начислений и отчётности.
+У клиента может быть несколько выставленных счетов и максимум один открытый
+черновик на расчётный месяц. Завершение новой задачи после выставления предыдущего
+счёта должно добавлять её в новый черновик, не изменяя старый snapshot.
+
+Модель (историческое имя BillingPeriod):
 
 ~~~text
 BillingPeriod
@@ -451,7 +457,7 @@ BillingPeriod
 DB constraint:
 
 ~~~text
-UNIQUE(client_id, year, month)
+UNIQUE INDEX(client_id, year, month) WHERE status = 'DRAFT'
 ~~~
 
 Статусы:
@@ -826,7 +832,10 @@ same forwarded message twice
 
 ### Billing
 
-- unique period per client/year/month;
+- unique open draft per client/year/month;
+- several independently payable issued invoices per month;
+- no issuing an empty/zero-total invoice;
+- no payment input when debt is zero;
 - DONE task appears exactly once;
 - recurring charge appears exactly once;
 - repeat generation is idempotent;

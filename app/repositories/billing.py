@@ -24,8 +24,17 @@ class BillingRepository:
             BillingPeriod.client_id == client_id,
             BillingPeriod.year == year,
             BillingPeriod.month == month,
+            BillingPeriod.status == "DRAFT",
         )
         return await self.session.scalar(stmt)
+
+    async def list_for_client(self, client_id: int) -> list[BillingPeriod]:
+        stmt = (
+            select(BillingPeriod)
+            .where(BillingPeriod.client_id == client_id)
+            .order_by(BillingPeriod.created_at.desc(), BillingPeriod.id.desc())
+        )
+        return list((await self.session.scalars(stmt)).all())
 
     async def add(self, period: BillingPeriod) -> BillingPeriod:
         self.session.add(period)

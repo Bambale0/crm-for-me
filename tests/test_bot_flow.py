@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 import app.db
 from app.handlers import register_all_handlers
 from app.middlewares.owner import OwnerOnlyMiddleware
-from app.models.billing import Payment
+from app.models.billing import BillingPeriod, Payment
 from app.models.client import Client
 from app.models.task import Task
 from app.services.billing_service import BillingService
@@ -312,6 +312,8 @@ async def test_payment_error_preserves_input_and_no_partial_record(harness):
         await svc.issue(period)
         pid = period.id
     await h.send(callback=f"pay:{pid}")
+    await h.send("0")
+    assert "больше 0" in h.last.text
     await h.send("10001")
     assert "превышает" in h.last.text
     await h.send("NaN")
@@ -323,3 +325,59 @@ async def test_payment_error_preserves_input_and_no_partial_record(harness):
     assert "Work" in h.last.text
     async with app.db.session_factory() as s:
         assert await s.scalar(select(func.count()).select_from(Payment)) == 1
+
+
+async def test_legacy_empty_invoice_has_no_payment_action(harness, bot_dispatcher):
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.methods import AnswerCallbackQuery
+
+    from app.services.client_service import ClientService
+    from app.utils.time import now_utc
+
+    h = harness
+    bot, dp, transport = bot_dispatcher
+    async with app.db.session_factory.begin() as s:
+        cid = (await ClientService(s).create("Client")).id
+        invoice = BillingPeriod(
+            client_id=cid, year=2026, month=9, status="ISSUED", issued_at=now_utc()
+        )
+        s.add(invoice)
+        await s.flush()
+        pid = invoice.id
+    # Even an old payment button must never enter the payment FSM for debt=0.
+    await h.send(callback=f"pay:{pid}")
+    key = StorageKey(bot_id=bot.id, chat_id=OWNER, user_id=OWNER)
+    assert await dp.storage.get_state(key) is None
+    answers = [m for m in transport.calls if isinstance(m, AnswerCallbackQuery)]
+    assert "Долга нет" in answers[-1].text
+    await h.send(callback=f"invoice:{pid}")
+    assert not any(
+        "Принять оплату" in b.text for row in h.last.reply_markup.inline_keyboard for b in row
+    )
+
+
+async def test_on_demand_invoice_history_opens_exact_invoice(harness):
+    from app.services.client_service import ClientService
+    from app.utils.time import current_month
+
+    h = harness
+    async with app.db.session_factory.begin() as s:
+        cid = (await ClientService(s).create("Client")).id
+        svc = BillingService(s)
+        first = await svc.get_or_create_period(cid, *current_month("Europe/Moscow"))
+        await svc.add_manual_item(first.id, "First work", Decimal("19500"))
+        await svc.issue(first)
+        first_id = first.id
+        second = await svc.get_or_create_period(cid, *current_month("Europe/Moscow"))
+        await svc.add_manual_item(second.id, "Second work", Decimal("5000"))
+        second_id = second.id
+    await h.send(callback=f"billing:{cid}")
+    await h.click("Выставить счёт")
+    await h.click("Выставить")
+    assert f"#{second_id}" in h.last.text
+    await h.click("История счетов")
+    await h.click(f"#{first_id} ")
+    assert "19 500 ₽" in h.last.text
+    await h.click("Принять оплату")
+    await h.send("19500")
+    assert f"#{first_id}" in h.last.text and "Долг: 0 ₽" in h.last.text
