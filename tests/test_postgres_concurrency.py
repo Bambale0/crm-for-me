@@ -255,3 +255,83 @@ async def test_concurrent_issue_and_done_preserve_all_work(engine):
         assert len(matching) == 1
         assert matching[0].billing_period_id == task.billing_period_id
         assert (await billing.get_period(pid)).status == "ISSUED"
+
+
+async def transfer_seed(engine):
+    from app.services.invoice_transfer_service import InvoiceTransferService
+
+    factory, cid, source_id = await seed(engine)
+    async with factory.begin() as session:
+        billing = BillingService(session)
+        target = await billing.get_or_create_period(cid, 2026, 9)
+        await billing.add_manual_item(target.id, "Target", Decimal("1000"))
+        await billing.issue(target)
+        source = await billing.get_period(source_id)
+        iid = (await billing.items(source))[0].id
+        preview = await InvoiceTransferService(session).preview(target.id, [iid])
+        return factory, cid, source_id, target.id, iid, preview.fingerprint
+
+
+async def test_concurrent_invoice_transfer_replay_creates_one_result(engine):
+    from app.models.billing import BillingPeriod, InvoiceItem
+    from app.services.invoice_transfer_service import InvoiceTransferService
+
+    factory, _, _, target, iid, fingerprint = await transfer_seed(engine)
+    barrier = asyncio.Barrier(2)
+
+    async def transfer():
+        async with factory.begin() as session:
+            await barrier.wait()
+            return (
+                await InvoiceTransferService(session).transfer(
+                    target, [iid], key="same", expected=fingerprint
+                )
+            ).id
+
+    ids = await asyncio.wait_for(asyncio.gather(transfer(), transfer()), 10)
+    async with factory() as session:
+        assert ids[0] == ids[1]
+        assert await session.scalar(select(func.count()).select_from(BillingPeriod)) == 3
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(InvoiceItem)
+                .where(InvoiceItem.origin_item_id.is_not(None))
+            )
+            == 2
+        )
+
+
+async def test_payment_and_transfer_race_preserves_debt_and_history(engine):
+    from app.services.dashboard_service import DashboardService
+    from app.services.invoice_transfer_service import InvoiceTransferService
+
+    factory, cid, source, target, iid, fingerprint = await transfer_seed(engine)
+    barrier = asyncio.Barrier(2)
+
+    async def transfer():
+        try:
+            async with factory.begin() as session:
+                await barrier.wait()
+                await InvoiceTransferService(session).transfer(
+                    target, [iid], key="race", expected=fingerprint
+                )
+            return "transfer"
+        except ValueError:
+            return "rejected"
+
+    async def pay():
+        try:
+            async with factory.begin() as session:
+                await barrier.wait()
+                await PaymentService(session).add_payment(source, "1000")
+            return "payment"
+        except DomainError:
+            return "rejected"
+
+    results = await asyncio.wait_for(asyncio.gather(transfer(), pay()), 10)
+    async with factory() as session:
+        paid = await session.scalar(select(func.coalesce(func.sum(Payment.amount), 0)))
+        debt = await DashboardService(session).total_debt(cid)
+        assert results.count("rejected") == 1
+        assert paid + debt == Decimal("11000")

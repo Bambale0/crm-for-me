@@ -9,6 +9,7 @@ from app.handlers import (
     details,
     errors,
     forward,
+    invoice_transfer,
     recurring,
     reminder,
     task,
@@ -25,5 +26,6 @@ def register_all_handlers(router: Router) -> None:
         recurring.router,
         reminder.router,
         billing.router,
+        invoice_transfer.router,
         errors.router,
     )

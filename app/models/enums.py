@@ -19,6 +19,7 @@ class TaskStatus(str, enum.Enum):
 
 
 class BillingStatus(str, enum.Enum):
+    SUPERSEDED = "SUPERSEDED"
     DRAFT = "DRAFT"
     ISSUED = "ISSUED"
     PARTIALLY_PAID = "PARTIALLY_PAID"
@@ -27,6 +28,7 @@ class BillingStatus(str, enum.Enum):
 
 
 class InvoiceItemSource(str, enum.Enum):
+    TRANSFER = "TRANSFER"
     TASK = "TASK"
     RECURRING_CHARGE = "RECURRING_CHARGE"
     MANUAL = "MANUAL"

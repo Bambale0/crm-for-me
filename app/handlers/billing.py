@@ -25,6 +25,7 @@ from app.utils.time import format_local, month_label
 router = Router(name="billing")
 
 STATUS_RU = {
+    "SUPERSEDED": "Заменён при объединении",
     "DRAFT": "Черновик",
     "ISSUED": "Выставлен",
     "PARTIALLY_PAID": "Частично оплачен",
@@ -51,7 +52,11 @@ async def _period_text(session, period) -> tuple[str, str, Totals]:
     lines.append(f"Итого: {format_money(totals.invoice_total, 'RUB')}")
     lines.append(f"Оплачено: {format_money(totals.paid_total, 'RUB')}")
     lines.append(f"Долг: {format_money(totals.debt, 'RUB')}")
-    if totals.invoice_total <= 0 and period.status == "DRAFT":
+    if period.status == "SUPERSEDED":
+        lines.append(
+            "\nИсторический счёт. Его позиции учтены в новых счетах; этот номер оплачивать не нужно."
+        )
+    elif totals.invoice_total <= 0 and period.status == "DRAFT":
         lines.append(
             "\nПока нет суммы к оплате. Отметьте задачу «Выполнено» или добавьте услугу — затем выставьте счёт в любой момент."
         )
@@ -251,6 +256,8 @@ async def on_financial_list(query: CallbackQuery) -> None:
     if (page + 1) * 4 < len(rows):
         nav.append(("➡️", f"{kind}:{pid}:{page + 1}"))
     buttons = [nav] if nav else []
+    if kind == "invoice_items" and period.status in ("DRAFT", "ISSUED"):
+        buttons.append([("🧩 Объединить позиции", f"transfer_start:{period.id}")])
     buttons.append([("⬅️ Счёт", f"invoice:{period.id}")])
     await query.answer()
     await query.message.edit_text(text, reply_markup=kb.buttons(buttons))
@@ -358,7 +365,7 @@ async def on_month_clients(query: CallbackQuery) -> None:
             totals = await billing.totals(period)
             entries.append(
                 (
-                    f"#{period.id} {client.display_name}: {format_money(totals.invoice_total)} / долг {format_money(totals.debt)}",
+                    f"#{period.id} {STATUS_RU[period.status]} · {client.display_name}: {format_money(totals.invoice_total)} / долг {format_money(totals.debt)}",
                     f"invoice:{period.id}",
                 )
             )

@@ -127,6 +127,8 @@ class BillingService:
         self, client_id: int, year: int, month: int, exclude_id: int | None = None
     ) -> set[int]:
         # The client lock serializes issue/generation across all that client's invoices.
+        # SUPERSEDED sources still prove that their recurring charge was allocated;
+        # their successors retain frozen TRANSFER copies, possibly in another month.
         stmt = (
             select(InvoiceItem.source_id)
             .join(BillingPeriod)
@@ -281,7 +283,11 @@ class BillingService:
     async def totals(self, period: BillingPeriod) -> Totals:
         invoice = await self.billing.invoice_total(period.id)
         paid = await self.billing.paid_total(period.id)
-        debt = max(Decimal("0"), invoice - paid)
+        debt = (
+            Decimal("0")
+            if period.status == BillingStatus.SUPERSEDED.value
+            else max(Decimal("0"), invoice - paid)
+        )
         return Totals(invoice_total=invoice, paid_total=paid, debt=debt)
 
     async def items(self, period: BillingPeriod) -> list[InvoiceItem]:

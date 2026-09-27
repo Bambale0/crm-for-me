@@ -32,7 +32,7 @@ async def on_error(event: ErrorEvent) -> bool:
         return True
     messages = {
         AlreadyExistsError: "Такая запись уже существует. Откройте её через карточку клиента.",
-        InvoiceIssuedError: "Этот счёт уже выставлен, его суммы зафиксированы. Новые работы попадут в следующий счёт.",
+        InvoiceIssuedError: "Позиции этого счёта уже зафиксированы. Новые работы попадут в следующий счёт.",
         InvalidAmountError: str(exc),
         NotFoundError: "Запись не найдена. Откройте главное меню.",
         OverpaymentError: "Сумма превышает остаток долга. Введите меньшую сумму.",

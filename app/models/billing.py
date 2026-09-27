@@ -50,6 +50,11 @@ class BillingPeriod(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(
         String(20), default=BillingStatus.DRAFT.value, nullable=False
     )
+    replaced_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("billing_periods.id", ondelete="RESTRICT"), nullable=True
+    )
+    transfer_key: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    transfer_request: Mapped[str | None] = mapped_column(String(64), nullable=True)
     issued_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
@@ -81,6 +86,9 @@ class InvoiceItem(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     billing_period_id: Mapped[int] = mapped_column(
         ForeignKey("billing_periods.id", ondelete="RESTRICT"), nullable=False
+    )
+    origin_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("invoice_items.id", ondelete="RESTRICT"), unique=True, nullable=True
     )
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
     source_id: Mapped[int | None] = mapped_column(nullable=True)
