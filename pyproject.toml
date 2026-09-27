@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crm-for-me"
+version = "0.1.0"
+description = "Personal Telegram CRM bot for a single owner"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.20,<4",
+    "SQLAlchemy[asyncio]>=2.0.30,<2.1",
+    "alembic>=1.13,<2",
+    "asyncpg>=0.29,<1",
+    "aiosqlite>=0.20,<1",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+    "greenlet>=3.0,<4",
+    "python-dotenv>=1.0,<2",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.24,<2",
+    "pytest-cov>=5,<7",
+]
+
+[project.scripts]
+crm-bot = "app.main:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/main.py", "app/handlers/*"]
