@@ -160,6 +160,10 @@ def billing_actions(
     rows.append(
         [("📋 Позиции", f"invoice_items:{period_id}:0"), ("💳 Оплаты", f"payments:{period_id}:0")]
     )
+    if status in ("DRAFT", "ISSUED"):
+        rows.append([("🧩 Объединить позиции", f"transfer_start:{period_id}")])
+    if status == "SUPERSEDED":
+        rows.append([("➡️ Новые счета", f"invoice_links:{period_id}")])
     rows.append([("🧾 История счетов", f"invoice_history:{client_id}:0")])
     if status != "DRAFT":
         rows.append([("➕ Новый счёт", f"billing:{client_id}")])

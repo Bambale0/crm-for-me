@@ -68,7 +68,7 @@ class DashboardService:
         debt = Decimal("0")
 
         for period in periods:
-            if period.status == BillingStatus.CANCELLED.value:
+            if period.status in (BillingStatus.CANCELLED.value, BillingStatus.SUPERSEDED.value):
                 continue
             if period.status == BillingStatus.DRAFT.value:
                 await self.billing.reconcile_draft(period)
@@ -91,7 +91,7 @@ class DashboardService:
         ]
         accrued = issued = paid = debt = Decimal("0")
         for period in periods:
-            if period.status == BillingStatus.CANCELLED.value:
+            if period.status in (BillingStatus.CANCELLED.value, BillingStatus.SUPERSEDED.value):
                 continue
             await self.billing.reconcile_draft(period)
             totals = await self.billing.totals(period)

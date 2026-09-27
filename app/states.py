@@ -47,3 +47,8 @@ class RecurringFlow(StatesGroup):
 class ReminderFlow(StatesGroup):
     text = State()
     when = State()
+
+
+class InvoiceTransferFlow(StatesGroup):
+    selecting = State()
+    confirming = State()

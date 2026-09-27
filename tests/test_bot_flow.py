@@ -381,3 +381,73 @@ async def test_on_demand_invoice_history_opens_exact_invoice(harness):
     await h.click("Принять оплату")
     await h.send("19500")
     assert f"#{first_id}" in h.last.text and "Долг: 0 ₽" in h.last.text
+
+
+async def test_select_positions_from_other_invoice_confirm_and_pay(harness):
+    from app.services.client_service import ClientService
+
+    h = harness
+    async with app.db.session_factory.begin() as session:
+        cid = (await ClientService(session).create("Client")).id
+        billing = BillingService(session)
+        source = await billing.get_or_create_period(cid, 2026, 9)
+        await billing.add_manual_item(source.id, "Move <work>", Decimal("19500"))
+        await billing.add_manual_item(source.id, "Keep", Decimal("5000"))
+        await billing.issue(source)
+        target = await billing.get_or_create_period(cid, 2026, 9)
+        await billing.add_manual_item(target.id, "Target", Decimal("1000"))
+        await billing.issue(target)
+        source_id, target_id = source.id, target.id
+    await h.send(callback=f"invoice:{target_id}")
+    await h.click("Позиции")
+    await h.click("Объединить позиции")
+    assert "Выбрано: 0" in h.last.text
+    await h.click("Move <work>")
+    await h.click("Продолжить")
+    assert "20 500 ₽" in h.last.text and "&lt;work&gt;" in h.last.text
+    await h.click("Изменить выбор")
+    await h.click("Продолжить")
+    confirm = h.button("Подтвердить объединение")
+    await h.click("Подтвердить объединение")
+    assert "Позиции объединены" in h.last.text and "20 500 ₽" in h.last.text
+    await h.send(callback=confirm)
+    await h.click("Принять оплату")
+    await h.send("20500")
+    assert "Долг: 0 ₽" in h.last.text
+    await h.send(callback=f"invoice:{source_id}")
+    assert "Заменён" in h.last.text
+    assert "Принять оплату" not in str(h.last.reply_markup)
+    await h.click("Новые счета")
+    async with app.db.session_factory() as session:
+        from app.services.dashboard_service import DashboardService
+
+        assert await DashboardService(session).total_debt(cid) == Decimal("5000")
+
+
+async def test_transfer_selection_pagination_and_cancel(harness):
+    from app.services.client_service import ClientService
+
+    h = harness
+    async with app.db.session_factory.begin() as session:
+        cid = (await ClientService(session).create("Client")).id
+        billing = BillingService(session)
+        source = await billing.get_or_create_period(cid, 2026, 9)
+        for index in range(7):
+            await billing.add_manual_item(source.id, f"Position {index}", Decimal("1000"))
+        await billing.issue(source)
+        target = await billing.get_or_create_period(cid, 2026, 9)
+        target_id = target.id
+    await h.send(callback=f"transfer_start:{target_id}")
+    await h.click("Position 0")
+    await h.click("➡️")
+    await h.click("Position 6")
+    assert "Выбрано: 2" in h.last.text
+    await h.click("⬅️")
+    assert "✅" in next(
+        b.text for row in h.last.reply_markup.inline_keyboard for b in row if "Position 0" in b.text
+    )
+    await h.click("Position 0")
+    assert "Выбрано: 1" in h.last.text
+    await h.click("Отмена")
+    async with app.db.session_factory() as session:
+        assert (await BillingService(session).get_period(source.id)).status == "ISSUED"
