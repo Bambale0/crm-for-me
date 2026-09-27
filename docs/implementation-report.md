@@ -24,6 +24,11 @@ timezone у нескольких дат. Не было обработчика к
 
 ## Проверено локально
 
+Итоговый PostgreSQL-прогон: **71 passed**, покрытие приложения **84,82%**
+(обработчики включены, entrypoint исключён). Быстрый SQLite-прогон: **65 passed,
+6 skipped**; пропускаются только PostgreSQL-конкурентные/constraint-тесты.
+UTCDateTime обеспечивает одинаковые timezone-aware даты на обоих драйверах.
+
 - `ruff check app tests alembic` и `ruff format --check app tests alembic`.
 - Полный прогон на PostgreSQL с `TEST_DATABASE_URL`, включая независимые
   конкурентные подключения, финансовые ограничения и диспетчер aiogram.

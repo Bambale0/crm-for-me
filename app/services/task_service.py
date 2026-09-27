@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timezone
 from decimal import Decimal
 
 from sqlalchemy.exc import IntegrityError
@@ -166,10 +165,6 @@ class TaskService:
     async def set_status(self, task: Task, new_status: TaskStatus) -> Task:
         await lock_client(self.session, task.client_id)
         await self.session.refresh(task)
-        for field in ("started_at", "completed_at", "cancelled_at"):
-            value = getattr(task, field)
-            if value is not None and value.tzinfo is None:
-                setattr(task, field, value.replace(tzinfo=timezone.utc))
         current = TaskStatus(task.status)
         if current == new_status:
             return task  # idempotent
@@ -238,10 +233,6 @@ class TaskService:
     ) -> Task:
         await lock_client(self.session, task.client_id)
         await self.session.refresh(task)
-        for field in ("started_at", "completed_at", "cancelled_at"):
-            value = getattr(task, field)
-            if value is not None and value.tzinfo is None:
-                setattr(task, field, value.replace(tzinfo=timezone.utc))
         if amount is not None:
             await self._ensure_amount_editable(task)
 

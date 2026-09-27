@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     CheckConstraint,
-    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -19,7 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base, TimestampMixin
+from app.db.base import Base, TimestampMixin, UTCDateTime
 from app.models.enums import BillingStatus, InvoiceItemSource
 
 if TYPE_CHECKING:
@@ -43,8 +42,8 @@ class BillingPeriod(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(
         String(20), default=BillingStatus.DRAFT.value, nullable=False
     )
-    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    issued_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
     client: Mapped["Client"] = relationship()
     items: Mapped[list["InvoiceItem"]] = relationship(
@@ -103,7 +102,7 @@ class Payment(TimestampMixin, Base):
     )
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="RUB")
-    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    paid_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
 

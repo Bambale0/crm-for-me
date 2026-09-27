@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base, TimestampMixin
+from app.db.base import Base, TimestampMixin, UTCDateTime
 from app.models.enums import ProjectStatus
 
 if TYPE_CHECKING:
@@ -28,7 +28,7 @@ class Project(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(
         String(16), default=ProjectStatus.ACTIVE.value, nullable=False
     )
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
     client: Mapped["Client"] = relationship(back_populates="projects")
     fields: Mapped[list["ProjectField"]] = relationship(

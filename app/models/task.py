@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
-    DateTime,
     ForeignKey,
     Index,
     Numeric,
@@ -18,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base, TimestampMixin
+from app.db.base import Base, TimestampMixin, UTCDateTime
 from app.models.enums import TaskStatus
 
 if TYPE_CHECKING:
@@ -52,9 +51,9 @@ class Task(TimestampMixin, Base):
 
     status: Mapped[str] = mapped_column(String(16), default=TaskStatus.NEW.value, nullable=False)
 
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
     billing_period_id: Mapped[int | None] = mapped_column(
         ForeignKey("billing_periods.id", ondelete="SET NULL"), nullable=True

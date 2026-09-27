@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, TimestampMixin
+from app.db.base import Base, TimestampMixin, UTCDateTime
 from app.models.enums import ReminderStatus
 
 
@@ -29,9 +29,9 @@ class Reminder(TimestampMixin, Base):
         ForeignKey("billing_periods.id", ondelete="SET NULL"), nullable=True
     )
 
-    remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    remind_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(
         String(16), default=ReminderStatus.PENDING.value, nullable=False
     )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
