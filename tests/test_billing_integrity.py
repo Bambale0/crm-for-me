@@ -11,6 +11,7 @@ caller's unit of work (e.g. the task being marked DONE).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest_asyncio
@@ -94,7 +95,11 @@ async def test_lost_race_preserves_callers_pending_work(factory):
         assert task.id is not None
 
 
-async def test_lost_race_preserves_done_transition(factory):
+async def test_lost_race_preserves_done_transition(factory, monkeypatch):
+    # This race targets the seeded September period regardless of CI wall clock.
+    monkeypatch.setattr(
+        "app.services.task_service.now_utc", lambda: datetime(2026, 9, 15, tzinfo=timezone.utc)
+    )
     client_id = await _seed_client(factory)
     period_id = await _commit_period_from_other_worker(factory, client_id)
 
