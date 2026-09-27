@@ -150,25 +150,19 @@ def doz_project_picker(client_id: int, projects, page: int = 0) -> InlineKeyboar
 
 
 def billing_actions(
-    period_id: int, status: str, client_id: int = 0, year: int = 0, month: int = 0
+    period_id: int, status: str, client_id: int, *, invoice_total, debt
 ) -> InlineKeyboardMarkup:
     rows = []
-    if status == "DRAFT":
+    if status == "DRAFT" and invoice_total > 0:
         rows.append([("🧾 Выставить счёт", f"billing_issue_ask:{period_id}")])
-    if status in ("ISSUED", "PARTIALLY_PAID"):
+    if status in ("ISSUED", "PARTIALLY_PAID") and debt > 0:
         rows.append([("💳 Принять оплату", f"pay:{period_id}")])
     rows.append(
         [("📋 Позиции", f"invoice_items:{period_id}:0"), ("💳 Оплаты", f"payments:{period_id}:0")]
     )
-    if year:
-        ordinal = year * 12 + month - 1
-        prev, nxt = ordinal - 1, ordinal + 1
-        rows.append(
-            [
-                ("⬅️ Месяц", f"billing:{client_id}:{prev // 12}:{prev % 12 + 1}"),
-                ("Месяц ➡️", f"billing:{client_id}:{nxt // 12}:{nxt % 12 + 1}"),
-            ]
-        )
+    rows.append([("🧾 История счетов", f"invoice_history:{client_id}:0")])
+    if status != "DRAFT":
+        rows.append([("➕ Новый счёт", f"billing:{client_id}")])
     rows.append([("⬅️ Клиент", f"client:{client_id}")])
     return buttons(rows)
 

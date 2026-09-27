@@ -14,7 +14,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
-    UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,7 +29,15 @@ class BillingPeriod(TimestampMixin, Base):
     __tablename__ = "billing_periods"
     __table_args__ = (
         CheckConstraint("month >= 1 AND month <= 12", name="ck_billing_periods_month"),
-        UniqueConstraint("client_id", "year", "month", name="uq_billing_periods_client_ym"),
+        Index(
+            "uq_billing_periods_draft_client_ym",
+            "client_id",
+            "year",
+            "month",
+            unique=True,
+            postgresql_where=text("status = 'DRAFT'"),
+            sqlite_where=text("status = 'DRAFT'"),
+        ),
         Index("ix_billing_periods_client_id", "client_id"),
     )
 

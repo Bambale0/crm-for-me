@@ -176,3 +176,82 @@ async def test_database_rejects_invalid_money_and_cascade_deletion(engine):
             await session.flush()
     async with factory() as session:
         assert await session.get(Client, cid) is not None
+
+
+async def test_concurrent_new_work_after_issue_shares_one_new_draft(engine):
+    from app.utils.time import current_month
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory.begin() as session:
+        cid = (await ClientService(session).create("Client")).id
+        billing = BillingService(session)
+        first = await billing.get_or_create_period(cid, *current_month("UTC"))
+        await billing.add_manual_item(first.id, "First invoice", Decimal("19500"))
+        await billing.issue(first)
+        first_id = first.id
+        tasks = TaskService(session)
+        tids = [(await tasks.create(cid, title, amount="5000")).id for title in ("A", "B")]
+    barrier = asyncio.Barrier(2)
+
+    async def done(tid):
+        async with factory.begin() as session:
+            tasks = TaskService(session)
+            task = await tasks.get(tid)
+            await barrier.wait()
+            await tasks.set_status(task, TaskStatus.DONE)
+            return task.billing_period_id
+
+    ids = await asyncio.wait_for(asyncio.gather(*(done(tid) for tid in tids)), 10)
+    async with factory() as session:
+        billing = BillingService(session)
+        first = await billing.get_period(first_id)
+        second = await billing.get_period(ids[0])
+        assert ids[0] == ids[1] != first_id
+        assert len(await billing.list_for_client(cid)) == 2
+        assert (await billing.totals(first)).invoice_total == Decimal("19500")
+        assert (await billing.totals(second)).invoice_total == Decimal("10000")
+
+
+async def test_concurrent_issue_and_done_preserve_all_work(engine):
+    from app.utils.time import current_month
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory.begin() as session:
+        cid = (await ClientService(session).create("Client")).id
+        billing = BillingService(session)
+        first = await billing.get_or_create_period(cid, *current_month("UTC"))
+        await billing.add_manual_item(first.id, "First work", Decimal("19500"))
+        pid = first.id
+        tid = (await TaskService(session).create(cid, "New work", amount="5000")).id
+    barrier = asyncio.Barrier(2)
+
+    async def issue():
+        async with factory.begin() as session:
+            billing = BillingService(session)
+            first = await billing.get_period(pid)
+            await barrier.wait()
+            await billing.issue(first)
+
+    async def done():
+        async with factory.begin() as session:
+            tasks = TaskService(session)
+            task = await tasks.get(tid)
+            await barrier.wait()
+            await tasks.set_status(task, TaskStatus.DONE)
+
+    await asyncio.wait_for(asyncio.gather(issue(), done()), 10)
+    async with factory() as session:
+        billing = BillingService(session)
+        invoices = await billing.list_for_client(cid)
+        totals = [(await billing.totals(invoice)).invoice_total for invoice in invoices]
+        assert sum(totals) == Decimal("24500")
+        task = await TaskService(session).get(tid)
+        matching = [
+            i
+            for invoice in invoices
+            for i in await billing.items(invoice)
+            if i.source_id == tid and i.source_type == "TASK"
+        ]
+        assert len(matching) == 1
+        assert matching[0].billing_period_id == task.billing_period_id
+        assert (await billing.get_period(pid)).status == "ISSUED"

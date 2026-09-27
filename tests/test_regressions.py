@@ -171,7 +171,7 @@ async def test_forwarded_message_still_deduped(session):
         )
 
 
-async def test_done_task_into_closed_period_is_rejected(session):
+async def test_done_after_issued_invoice_keeps_revenue_in_next_draft(session):
     """Completing work for a month whose invoice is already issued must not
     silently drop the revenue (AGENTS.md §17/§19)."""
     client = await _client(session)
@@ -187,8 +187,10 @@ async def test_done_task_into_closed_period_is_rejected(session):
     svc = TaskService(session, tz_name="UTC")
     task = await svc.create(client.id, "Поздняя работа", amount=Decimal("5000"))
 
-    with pytest.raises(InvoiceIssuedError):
-        await svc.set_status(task, TaskStatus.DONE)
+    await svc.set_status(task, TaskStatus.DONE)
+    new_draft = await billing.get_period(task.billing_period_id)
+    assert new_draft.id != period.id
+    assert (await billing.totals(new_draft)).invoice_total == Decimal("5000")
 
     # The issued snapshot must be untouched.
     assert (await billing.totals(period)).invoice_total == Decimal("10000")

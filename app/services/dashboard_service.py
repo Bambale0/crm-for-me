@@ -84,25 +84,23 @@ class DashboardService:
 
     async def client_month_stats(self, client_id: int, year: int, month: int) -> MonthStats:
         await self.billing.generate_month(year, month, client_id)
-        period = await self.billing_repo.get_for_client_month(client_id, year, month)
-        if period is None:
-            return MonthStats(Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"))
-        if period.status == BillingStatus.CANCELLED.value:
-            return MonthStats(Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"))
-        if period.status == BillingStatus.DRAFT.value:
+        periods = [
+            p
+            for p in await self.billing_repo.list_for_month(year, month)
+            if p.client_id == client_id
+        ]
+        accrued = issued = paid = debt = Decimal("0")
+        for period in periods:
+            if period.status == BillingStatus.CANCELLED.value:
+                continue
             await self.billing.reconcile_draft(period)
-        invoice = await self.billing_repo.invoice_total(period.id)
-        period_paid = await self.billing_repo.paid_total(period.id)
-        if period.status in ISSUED_STATUSES:
-            return MonthStats(
-                accrued=invoice,
-                issued=invoice,
-                paid=period_paid,
-                debt=max(Decimal("0"), invoice - period_paid),
-            )
-        return MonthStats(
-            accrued=invoice, issued=Decimal("0"), paid=Decimal("0"), debt=Decimal("0")
-        )
+            totals = await self.billing.totals(period)
+            accrued += totals.invoice_total
+            if period.status in ISSUED_STATUSES:
+                issued += totals.invoice_total
+                paid += totals.paid_total
+                debt += totals.debt
+        return MonthStats(accrued=accrued, issued=issued, paid=paid, debt=debt)
 
     async def total_debt(self, client_id: int) -> Decimal:
         stmt = (

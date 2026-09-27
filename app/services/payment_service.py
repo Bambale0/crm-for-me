@@ -57,9 +57,9 @@ class PaymentService:
             )
 
         if amount <= 0:
-            raise InvalidAmountError("Payment amount must be positive")
+            raise InvalidAmountError("Сумма оплаты должна быть больше 0 ₽.")
 
-        totals = await self.billing.totals(period)
+        totals = await self.billing.ensure_payable(period)
         remaining = totals.invoice_total - totals.paid_total
         if amount > remaining:
             raise OverpaymentError(f"Payment {amount} exceeds remaining debt {remaining}")
