@@ -1,0 +1,11 @@
+[Unit]
+Description=Check CRM deployment every minute
+
+[Timer]
+OnBootSec=45s
+OnUnitInactiveSec=60s
+AccuracySec=5s
+Unit=crm-for-me-deploy.service
+
+[Install]
+WantedBy=timers.target
