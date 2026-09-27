@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -16,6 +17,8 @@ from app.models.recurring import RecurringCharge
 from app.models.task import Task
 from app.repositories.billing import BillingRepository
 from app.services.errors import InvalidTransitionError, NotFoundError
+from app.services.validation import lock_client
+from app.utils.money import to_decimal
 from app.utils.time import current_month, local_month, now_utc
 
 
@@ -31,7 +34,7 @@ def charge_active_in_month(charge: RecurringCharge, year: int, month: int) -> bo
     if not charge.is_active:
         return False
     month_start = date(year, month, 1)
-    if month_start < charge.active_from:
+    if date(year, month, monthrange(year, month)[1]) < charge.active_from:
         return False
     if charge.active_until is not None and month_start > charge.active_until:
         return False
@@ -46,6 +49,8 @@ class BillingService:
     # ── periods ───────────────────────────────────────────────────────────
     async def get_or_create_period(self, client_id: int, year: int, month: int) -> BillingPeriod:
         """Idempotent: returns the single (client, year, month) period."""
+        date(year, month, 1)
+        await lock_client(self.session, client_id)
         existing = await self.billing.get_for_client_month(client_id, year, month)
         if existing is not None:
             return existing
@@ -76,6 +81,27 @@ class BillingService:
             raise NotFoundError(f"BillingPeriod {period_id} not found")
         return period
 
+    async def lock_period(self, period_id: int) -> BillingPeriod:
+        period = await self.get_period(period_id)
+        await lock_client(self.session, period.client_id)
+        await self.session.refresh(
+            period, attribute_names=["status", "issued_at", "closed_at"], with_for_update=True
+        )
+        return period
+
+    async def generate_month(self, year: int, month: int, client_id: int | None = None) -> None:
+        date(year, month, 1)
+        stmt = select(RecurringCharge).order_by(RecurringCharge.client_id)
+        if client_id is not None:
+            stmt = stmt.where(RecurringCharge.client_id == client_id)
+        charges = list(
+            (await self.session.scalars(stmt.execution_options(populate_existing=True))).all()
+        )
+        clients = sorted({c.client_id for c in charges if charge_active_in_month(c, year, month)})
+        for cid in clients:
+            period = await self.get_or_create_period(cid, year, month)
+            await self.reconcile_draft(period)
+
     async def current_period(self, client_id: int, tz_name: str) -> BillingPeriod:
         year, month = current_month(tz_name)
         return await self.get_or_create_period(client_id, year, month)
@@ -89,6 +115,7 @@ class BillingService:
 
         Idempotent: repeated calls never duplicate items. No-op for issued periods.
         """
+        period = await self.lock_period(period.id)
         if period.status != BillingStatus.DRAFT.value:
             return period
 
@@ -105,9 +132,7 @@ class BillingService:
 
         items = await self.billing.list_items(period.id)
         by_source = {
-            (item.source_type, item.source_id): item
-            for item in items
-            if item.source_id is not None
+            (item.source_type, item.source_id): item for item in items if item.source_id is not None
         }
 
         for key, (description, amount) in desired.items():
@@ -129,10 +154,14 @@ class BillingService:
                 item.amount = amount
 
         for (source_type, source_id), item in by_source.items():
-            if source_type in (
-                InvoiceItemSource.TASK.value,
-                InvoiceItemSource.RECURRING_CHARGE.value,
-            ) and (source_type, source_id) not in desired:
+            if (
+                source_type
+                in (
+                    InvoiceItemSource.TASK.value,
+                    InvoiceItemSource.RECURRING_CHARGE.value,
+                )
+                and (source_type, source_id) not in desired
+            ):
                 await self.session.delete(item)
 
         await self.session.flush()
@@ -143,22 +172,29 @@ class BillingService:
             Task.billing_period_id == period_id,
             Task.status == TaskStatus.DONE.value,
         )
-        return list((await self.session.scalars(stmt)).all())
+        return list(
+            (await self.session.scalars(stmt.execution_options(populate_existing=True))).all()
+        )
 
     async def _charges_for_period(self, period: BillingPeriod) -> list[RecurringCharge]:
         stmt = select(RecurringCharge).where(
             RecurringCharge.client_id == period.client_id,
             RecurringCharge.is_active.is_(True),
         )
-        charges = list((await self.session.scalars(stmt)).all())
+        charges = list(
+            (await self.session.scalars(stmt.execution_options(populate_existing=True))).all()
+        )
         return [c for c in charges if charge_active_in_month(c, period.year, period.month)]
 
     # ── manual items ──────────────────────────────────────────────────────
     async def add_manual_item(
         self, period_id: int, description: str, amount: Decimal
     ) -> InvoiceItem:
-        period = await self.get_period(period_id)
+        period = await self.lock_period(period_id)
         self._ensure_draft(period)
+        amount = to_decimal(amount)
+        if not description.strip():
+            raise ValueError("Введите описание позиции")
         item = InvoiceItem(
             billing_period_id=period_id,
             source_type=InvoiceItemSource.MANUAL.value,
@@ -173,6 +209,7 @@ class BillingService:
 
     # ── issue / snapshot ──────────────────────────────────────────────────
     async def issue(self, period: BillingPeriod) -> BillingPeriod:
+        period = await self.lock_period(period.id)
         if period.status in (
             BillingStatus.ISSUED.value,
             BillingStatus.PARTIALLY_PAID.value,
@@ -211,4 +248,3 @@ class BillingService:
     @staticmethod
     def period_key(dt: datetime, tz_name: str) -> tuple[int, int]:
         return local_month(dt, tz_name)
-

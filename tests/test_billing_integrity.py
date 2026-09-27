@@ -53,9 +53,7 @@ async def _seed_client(factory) -> int:
 async def _commit_period_from_other_worker(factory, client_id: int) -> int:
     """Simulate the worker that wins the race and commits the period first."""
     async with factory() as other:
-        period = BillingPeriod(
-            client_id=client_id, year=2026, month=9, status="DRAFT"
-        )
+        period = BillingPeriod(client_id=client_id, year=2026, month=9, status="DRAFT")
         other.add(period)
         await other.commit()
         return period.id

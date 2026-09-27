@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 CURRENCY_SYMBOLS = {
     "RUB": "₽",
@@ -27,11 +27,25 @@ def format_money(amount: Decimal, currency: str = "RUB") -> str:
     return f"{body} {symbol}".strip()
 
 
-def to_decimal(value) -> Decimal:
-    """Coerce user input to Decimal, raising ValueError on bad input."""
-    if isinstance(value, Decimal):
-        return quantize(value)
-    text = str(value).strip().replace(",", ".").replace(" ", "")
-    if text == "":
-        raise ValueError("empty amount")
-    return quantize(Decimal(text))
+def to_decimal(value: Decimal | str | int) -> Decimal:
+    """Validate a nonnegative, finite NUMERIC(18, 2) amount, never via float."""
+    if isinstance(value, (float, bool)):
+        raise ValueError("Введите сумму числом, например 1500,50")
+    try:
+        amount = Decimal(
+            str(value).strip().replace(",", ".").replace(" ", "").replace("\u00a0", "")
+        )
+        if not amount.is_finite() or amount < 0:
+            raise ValueError("Сумма должна быть конечной и неотрицательной")
+        amount = quantize(amount)
+        if amount >= Decimal("10000000000000000"):
+            raise ValueError("Сумма слишком велика")
+        return amount
+    except InvalidOperation as exc:
+        raise ValueError("Введите сумму числом, например 1500,50") from exc
+
+
+def validate_currency(currency: str) -> str:
+    if currency != "RUB":
+        raise ValueError("В этой версии доступен учёт только в RUB")
+    return currency

@@ -61,7 +61,7 @@ def extract_forward_info(message: Message) -> ForwardInfo | None:
         )
 
     if isinstance(origin, (MessageOriginChannel, MessageOriginChat)):
-        chat = origin.sender_chat
+        chat = origin.chat if isinstance(origin, MessageOriginChannel) else origin.sender_chat
         sender_name = getattr(chat, "title", None) or getattr(chat, "full_name", None)
         return ForwardInfo(
             telegram_user_id=None,

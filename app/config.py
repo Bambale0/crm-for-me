@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,14 +26,25 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://crm:crm@localhost:5432/crm",
         alias="DATABASE_URL",
     )
-    alembic_database_url: str = Field(
-        default="postgresql+asyncpg://crm:crm@localhost:5432/crm",
+    alembic_database_url: str | None = Field(
+        default=None,
         alias="ALEMBIC_DATABASE_URL",
     )
 
     # Behaviour
     timezone: str = Field(default="Europe/Moscow", alias="TIMEZONE")
-    default_currency: str = Field(default="RUB", alias="DEFAULT_CURRENCY")
+    default_currency: Literal["RUB"] = Field(default="RUB", alias="DEFAULT_CURRENCY")
+
+    reminder_interval_seconds: int = Field(default=30, ge=1, alias="REMINDER_INTERVAL_SECONDS")
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError:
+            raise ValueError("Unknown IANA timezone") from None
+        return value
 
     # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

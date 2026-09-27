@@ -80,7 +80,6 @@ async def test_cancel_unassigns_draft_item(session):
     task = await svc.create(client.id, "Задача", amount=Decimal("500"))
     task = await svc.set_status(task, TaskStatus.IN_PROGRESS)
     task = await svc.set_status(task, TaskStatus.DONE)
-    period_id = task.billing_period_id
     # Can't cancel after DONE (no transition), so test cancel from IN_PROGRESS.
     task2 = await svc.create(client.id, "Другая", amount=Decimal("500"))
     await svc.set_status(task2, TaskStatus.IN_PROGRESS)

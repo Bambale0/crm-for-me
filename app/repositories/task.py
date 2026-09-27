@@ -21,18 +21,14 @@ class TaskRepository:
         await self.session.flush()
         return task
 
-    async def list_by_client(
-        self, client_id: int, status: TaskStatus | None = None
-    ) -> list[Task]:
+    async def list_by_client(self, client_id: int, status: TaskStatus | None = None) -> list[Task]:
         stmt = select(Task).where(Task.client_id == client_id).order_by(Task.created_at.desc())
         if status is not None:
             stmt = stmt.where(Task.status == status.value)
         return list((await self.session.scalars(stmt)).all())
 
     async def list_by_project(self, project_id: int) -> list[Task]:
-        stmt = (
-            select(Task).where(Task.project_id == project_id).order_by(Task.created_at.desc())
-        )
+        stmt = select(Task).where(Task.project_id == project_id).order_by(Task.created_at.desc())
         return list((await self.session.scalars(stmt)).all())
 
     async def list_all(self, status: TaskStatus | None = None) -> list[Task]:

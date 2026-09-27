@@ -33,43 +33,59 @@ class SearchService:
             return SearchResult([], [], [])
         pattern = f"%{_escape_like(query)}%"
 
-        clients = list((await self.session.scalars(
-            select(Client)
-            .where(
-                or_(
-                    Client.display_name.ilike(pattern),
-                    Client.telegram_username.ilike(pattern),
-                    Client.company_name.ilike(pattern),
-                    Client.id.in_(
-                        select(ClientField.client_id).where(ClientField.value.ilike(pattern))
-                    ),
+        clients = list(
+            (
+                await self.session.scalars(
+                    select(Client)
+                    .where(
+                        or_(
+                            Client.display_name.ilike(pattern, escape="\\"),
+                            Client.telegram_username.ilike(pattern, escape="\\"),
+                            Client.company_name.ilike(pattern, escape="\\"),
+                            Client.id.in_(
+                                select(ClientField.client_id).where(
+                                    ClientField.value.ilike(pattern, escape="\\")
+                                )
+                            ),
+                        )
+                    )
+                    .order_by(Client.display_name)
                 )
-            )
-            .order_by(Client.display_name)
-        )).all())
+            ).all()
+        )
 
-        projects = list((await self.session.scalars(
-            select(Project)
-            .where(
-                or_(
-                    Project.name.ilike(pattern),
-                    Project.id.in_(
-                        select(ProjectField.project_id).where(ProjectField.value.ilike(pattern))
-                    ),
+        projects = list(
+            (
+                await self.session.scalars(
+                    select(Project)
+                    .where(
+                        or_(
+                            Project.name.ilike(pattern, escape="\\"),
+                            Project.id.in_(
+                                select(ProjectField.project_id).where(
+                                    ProjectField.value.ilike(pattern, escape="\\")
+                                )
+                            ),
+                        )
+                    )
+                    .order_by(Project.name)
                 )
-            )
-            .order_by(Project.name)
-        )).all())
+            ).all()
+        )
 
-        tasks = list((await self.session.scalars(
-            select(Task)
-            .where(
-                or_(
-                    Task.title.ilike(pattern),
-                    Task.description.ilike(pattern),
+        tasks = list(
+            (
+                await self.session.scalars(
+                    select(Task)
+                    .where(
+                        or_(
+                            Task.title.ilike(pattern, escape="\\"),
+                            Task.description.ilike(pattern, escape="\\"),
+                        )
+                    )
+                    .order_by(Task.created_at.desc())
                 )
-            )
-            .order_by(Task.created_at.desc())
-        )).all())
+            ).all()
+        )
 
         return SearchResult(clients=clients, projects=projects, tasks=tasks)

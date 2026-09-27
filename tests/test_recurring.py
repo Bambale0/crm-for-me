@@ -18,9 +18,7 @@ async def test_recurring_generation_idempotent(session):
     period = await billing.get_or_create_period(client.id, 2026, 9)
 
     recurring = RecurringService(session)
-    await recurring.create(
-        client.id, "Сервер", Decimal("8000"), active_from=date(2026, 1, 1)
-    )
+    await recurring.create(client.id, "Сервер", Decimal("8000"), active_from=date(2026, 1, 1))
 
     await billing.reconcile_draft(period)
     await billing.reconcile_draft(period)  # must not duplicate
@@ -37,9 +35,7 @@ async def test_charge_not_active_before_start(session):
     period = await billing.get_or_create_period(client.id, 2026, 1)
 
     recurring = RecurringService(session)
-    await recurring.create(
-        client.id, "Сервер", Decimal("8000"), active_from=date(2026, 6, 1)
-    )
+    await recurring.create(client.id, "Сервер", Decimal("8000"), active_from=date(2026, 6, 1))
     await billing.reconcile_draft(period)
     items = await billing.items(period)
     assert [i for i in items if i.source_type == "RECURRING_CHARGE"] == []

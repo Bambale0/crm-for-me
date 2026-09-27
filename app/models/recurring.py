@@ -4,17 +4,27 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Date, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Index, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
 from app.models.enums import RecurringFrequency
 
+if TYPE_CHECKING:
+    from app.models.client import Client
+    from app.models.project import Project
+
 
 class RecurringCharge(TimestampMixin, Base):
     __tablename__ = "recurring_charges"
     __table_args__ = (
+        CheckConstraint("amount >= 0", name="ck_recurring_amount"),
+        CheckConstraint("currency = 'RUB'", name="ck_recurring_currency"),
+        CheckConstraint(
+            "active_until IS NULL OR active_until >= active_from", name="ck_recurring_dates"
+        ),
         Index("ix_recurring_charges_client_id", "client_id"),
         Index("ix_recurring_charges_project_id", "project_id"),
     )

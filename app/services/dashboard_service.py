@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.billing import BillingPeriod, InvoiceItem, Payment
+from app.models.billing import BillingPeriod
 from app.models.enums import BillingStatus, TaskStatus
 from app.models.task import Task
 from app.repositories.billing import BillingRepository
@@ -54,9 +53,14 @@ class DashboardService:
     async def _tasks_completed_in(self, year: int, month: int) -> list[Task]:
         stmt = select(Task).where(Task.status == TaskStatus.DONE.value)
         tasks = list((await self.session.scalars(stmt)).all())
-        return [t for t in tasks if t.completed_at is not None and local_month(t.completed_at, self.tz) == (year, month)]
+        return [
+            t
+            for t in tasks
+            if t.completed_at is not None and local_month(t.completed_at, self.tz) == (year, month)
+        ]
 
     async def month_stats(self, year: int, month: int) -> MonthStats:
+        await self.billing.generate_month(year, month)
         periods = await self.billing_repo.list_for_month(year, month)
         accrued = Decimal("0")
         issued = Decimal("0")
@@ -79,6 +83,7 @@ class DashboardService:
         return MonthStats(accrued=accrued, issued=issued, paid=paid, debt=debt)
 
     async def client_month_stats(self, client_id: int, year: int, month: int) -> MonthStats:
+        await self.billing.generate_month(year, month, client_id)
         period = await self.billing_repo.get_for_client_month(client_id, year, month)
         if period is None:
             return MonthStats(Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"))
@@ -95,7 +100,9 @@ class DashboardService:
                 paid=period_paid,
                 debt=max(Decimal("0"), invoice - period_paid),
             )
-        return MonthStats(accrued=invoice, issued=Decimal("0"), paid=Decimal("0"), debt=Decimal("0"))
+        return MonthStats(
+            accrued=invoice, issued=Decimal("0"), paid=Decimal("0"), debt=Decimal("0")
+        )
 
     async def total_debt(self, client_id: int) -> Decimal:
         stmt = (
@@ -112,8 +119,12 @@ class DashboardService:
         return debt
 
     async def active_task_count(self, client_id: int) -> int:
-        stmt = select(func.count()).select_from(Task).where(
-            Task.client_id == client_id,
-            Task.status.in_((TaskStatus.NEW.value, TaskStatus.IN_PROGRESS.value)),
+        stmt = (
+            select(func.count())
+            .select_from(Task)
+            .where(
+                Task.client_id == client_id,
+                Task.status.in_((TaskStatus.NEW.value, TaskStatus.IN_PROGRESS.value)),
+            )
         )
         return int(await self.session.scalar(stmt) or 0)

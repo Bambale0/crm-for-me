@@ -4,17 +4,33 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
 from app.models.enums import TaskStatus
 
+if TYPE_CHECKING:
+    from app.models.client import Client
+    from app.models.project import Project
+
 
 class Task(TimestampMixin, Base):
     __tablename__ = "tasks"
     __table_args__ = (
+        CheckConstraint("amount >= 0", name="ck_tasks_amount"),
+        CheckConstraint("currency = 'RUB'", name="ck_tasks_currency"),
         Index("ix_tasks_client_id", "client_id"),
         Index("ix_tasks_project_id", "project_id"),
         Index("ix_tasks_status", "status"),
@@ -36,9 +52,9 @@ class Task(TimestampMixin, Base):
 
     status: Mapped[str] = mapped_column(String(16), default=TaskStatus.NEW.value, nullable=False)
 
-    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    cancelled_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     billing_period_id: Mapped[int | None] = mapped_column(
         ForeignKey("billing_periods.id", ondelete="SET NULL"), nullable=True
@@ -59,9 +75,7 @@ class TaskSource(TimestampMixin, Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    task_id: Mapped[int] = mapped_column(
-        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
-    )
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
     source_type: Mapped[str] = mapped_column(String(32), nullable=False, default="TELEGRAM_FORWARD")
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

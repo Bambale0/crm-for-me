@@ -31,5 +31,7 @@ class Reminder(TimestampMixin, Base):
 
     remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(16), default=ReminderStatus.PENDING.value, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), default=ReminderStatus.PENDING.value, nullable=False
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

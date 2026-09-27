@@ -1,6 +1,6 @@
-"""Task handlers: list, status actions, and the minimal дозаказ flow."""
+"""Task workflow and fast forwarded/manual order creation."""
 
-from __future__ import annotations
+from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -12,144 +12,236 @@ from app.db import session_scope
 from app.models.enums import TaskStatus
 from app.services.project_service import ProjectService
 from app.services.task_service import SourceData, TaskService
-from app.states import TaskCreation
+from app.services.validation import validate_project
+from app.states import EditFlow, TaskCreation
 from app.utils.money import format_money, to_decimal
 
 router = Router(name="task")
 
 
 def _title_from_text(text: str) -> str:
-    text = (text or "").strip()
-    if not text:
-        return "Дозаказ"
-    first_line = text.splitlines()[0].strip()
-    return first_line[:100] or "Дозаказ"
+    return ((text or "").strip().splitlines() or ["Дозаказ"])[0][:100] or "Дозаказ"
 
 
-@router.callback_query(F.data.startswith(f"{kb.TASKS}:"))
-async def on_tasks(query: CallbackQuery) -> None:
+def task_text(task) -> str:
+    labels = {
+        "NEW": "Новая",
+        "IN_PROGRESS": "В работе",
+        "DONE": "Выполнена",
+        "CANCELLED": "Отменена",
+    }
+    lines = [
+        f"📌 <b>{escape(task.title)}</b>",
+        f"Статус: {labels[task.status]}",
+        f"Сумма: {format_money(task.amount, task.currency)}",
+    ]
+    if task.description:
+        lines.append(escape(task.description[:800]))
+    if task.source and task.source.original_text:
+        lines.append("\nИсходное сообщение:\n" + escape(task.source.original_text[:800]))
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith("tasks:"))
+async def on_tasks(query: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     parts = query.data.split(":")
-    client_id = int(parts[1])
-    context = "client"
-    if len(parts) > 2 and parts[2] == "project":
-        context = "project"
+    entity_id = int(parts[1])
+    context = parts[2] if len(parts) > 2 else "client"
+    page = int(parts[3]) if len(parts) > 3 else 0
     async with session_scope() as session:
-        svc = TaskService(session, tz_name=get_settings().timezone)
-        tasks = await (svc.list_by_project(client_id) if context == "project" else svc.list_by_client(client_id))
+        svc = TaskService(session, get_settings().timezone)
+        tasks = await (
+            svc.list_by_project(entity_id)
+            if context == "project"
+            else svc.list_by_client(entity_id)
+        )
+    await query.answer()
     await query.message.edit_text(
         "Задачи:" if tasks else "Задач пока нет.",
-        reply_markup=kb.tasks_list(client_id, tasks, context=context),
+        reply_markup=kb.tasks_list(entity_id, tasks, context, page),
     )
+
+
+@router.callback_query(F.data.startswith("task:"))
+async def on_task(query: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    async with session_scope() as session:
+        task = await TaskService(session).get(int(query.data.split(":")[1]))
+        text = task_text(task)
     await query.answer()
-
-
-@router.callback_query(F.data.startswith(f"{kb.TASK}:"))
-async def on_task(query: CallbackQuery) -> None:
-    task_id = int(query.data.split(":")[1])
-    async with session_scope() as session:
-        svc = TaskService(session, tz_name=get_settings().timezone)
-        task = await svc.get(task_id)
-        text = (
-            f"📌 <b>{task.title}</b>\n"
-            f"Статус: {task.status}\n"
-            f"Сумма: {format_money(task.amount, task.currency)}"
-        )
-    await query.message.edit_text(text, reply_markup=kb.task_actions(task_id))
-    await query.answer()
-
-
-async def _set_status(query: CallbackQuery, task_id: int, status: TaskStatus) -> None:
-    label = {"DONE": "✅ Выполнено", "IN_PROGRESS": "⏳ В работе", "CANCELLED": "❌ Отменено"}[status.value]
-    async with session_scope() as session:
-        svc = TaskService(session, tz_name=get_settings().timezone)
-        task = await svc.get(task_id)
-        await svc.set_status(task, status)
-        text = f"📌 <b>{task.title}</b>\nСтатус: {task.status}"
-    await query.answer(label)
-    await query.message.edit_text(text, reply_markup=kb.task_actions(task_id))
-
-
-@router.callback_query(F.data.startswith(f"{kb.TASK_DONE}:"))
-async def on_task_done(query: CallbackQuery) -> None:
-    await _set_status(query, int(query.data.split(":")[1]), TaskStatus.DONE)
-
-
-@router.callback_query(F.data.startswith(f"{kb.TASK_PROGRESS}:"))
-async def on_task_progress(query: CallbackQuery) -> None:
-    await _set_status(query, int(query.data.split(":")[1]), TaskStatus.IN_PROGRESS)
-
-
-@router.callback_query(F.data.startswith(f"{kb.TASK_CANCEL}:"))
-async def on_task_cancel(query: CallbackQuery) -> None:
-    await _set_status(query, int(query.data.split(":")[1]), TaskStatus.CANCELLED)
-
-
-# ── дозаказ flow ───────────────────────────────────────────────────────────
-@router.callback_query(F.data.startswith(f"{kb.DOZ_START}:"))
-async def on_doz_start(query: CallbackQuery, state: FSMContext) -> None:
-    client_id = int(query.data.split(":")[1])
-    await state.update_data(doz_client_id=client_id)
-    async with session_scope() as session:
-        projects = await ProjectService(session).list_for_client(client_id)
     await query.message.edit_text(
-        "Выберите проект для дозаказа:",
-        reply_markup=kb.doz_project_picker(client_id, projects),
+        text, reply_markup=kb.task_actions(task.id, task.status, task.client_id)
     )
+
+
+async def _set_status(query: CallbackQuery, status: TaskStatus) -> None:
+    async with session_scope() as session:
+        svc = TaskService(session, get_settings().timezone)
+        task = await svc.get(int(query.data.split(":")[1]))
+        await svc.set_status(task, status)
+        text = task_text(task)
+    await query.answer("Сохранено")
+    await query.message.edit_text(
+        text, reply_markup=kb.task_actions(task.id, task.status, task.client_id)
+    )
+
+
+@router.callback_query(F.data.startswith("task_done:"))
+async def on_task_done(query: CallbackQuery) -> None:
+    await _set_status(query, TaskStatus.DONE)
+
+
+@router.callback_query(F.data.startswith("task_progress:"))
+async def on_task_progress(query: CallbackQuery) -> None:
+    await _set_status(query, TaskStatus.IN_PROGRESS)
+
+
+@router.callback_query(F.data.startswith("task_cancel_ask:"))
+async def on_task_cancel_ask(query: CallbackQuery) -> None:
+    tid = int(query.data.split(":")[1])
     await query.answer()
+    await query.message.edit_text(
+        "Отменить задачу?",
+        reply_markup=kb.buttons(
+            [[("Да, отменить", f"task_cancel:{tid}"), ("Назад", f"task:{tid}")]]
+        ),
+    )
 
 
-@router.callback_query(F.data.startswith(f"{kb.DOZ_PROJECT}:"))
-async def on_doz_project(query: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data.startswith("task_cancel:"))
+async def on_task_cancel(query: CallbackQuery) -> None:
+    await _set_status(query, TaskStatus.CANCELLED)
+
+
+@router.callback_query(F.data.startswith("task_edit:"))
+async def on_task_edit(query: CallbackQuery, state: FSMContext) -> None:
+    _, tid, field = query.data.split(":")
+    if field not in ("title", "description", "amount"):
+        raise ValueError("Неизвестное поле")
+    await state.clear()
+    await state.update_data(edit_task_id=int(tid), edit_field=field)
+    await state.set_state(EditFlow.value)
+    await query.answer()
+    await query.message.edit_text("Введите новое значение:", reply_markup=kb.back_to_main())
+
+
+@router.message(EditFlow.value)
+async def on_task_edit_value(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    value = (message.text or "").strip()
+    field = data["edit_field"]
+    if not value or (field == "title" and len(value) > 500):
+        raise ValueError("Введите корректное значение")
+    async with session_scope() as session:
+        svc = TaskService(session)
+        task = await svc.get(data["edit_task_id"])
+        await svc.edit(task, **{field: to_decimal(value) if field == "amount" else value})
+    await state.clear()
+    await message.answer(
+        "Изменения сохранены.", reply_markup=kb.task_actions(task.id, task.status, task.client_id)
+    )
+
+
+@router.callback_query(F.data.startswith("doz_start:"))
+async def on_doz_start(query: CallbackQuery, state: FSMContext) -> None:
     parts = query.data.split(":")
-    client_id = int(parts[1])
-    project_id = int(parts[2])
-    await state.update_data(doz_client_id=client_id, doz_project_id=project_id or None)
-    await state.set_state(TaskCreation.waiting_amount)
-    await query.message.edit_text("Введите сумму дозаказа (например, 1500):")
+    cid = int(parts[1])
+    data = await state.get_data()
+    if len(parts) > 2:
+        if data.get("fwd_token") != parts[2] or data.get("fwd_client_id") != cid:
+            await query.answer("Перешлите сообщение заново.", show_alert=True)
+            return
+    else:
+        await state.clear()
+    await state.update_data(doz_client_id=cid)
+    await state.set_state(TaskCreation.waiting_project)
+    async with session_scope() as session:
+        await validate_project(session, cid, None)
+        projects = await ProjectService(session).list_for_client(cid)
     await query.answer()
+    await query.message.edit_text(
+        "Выберите проект:", reply_markup=kb.doz_project_picker(cid, projects)
+    )
+
+
+@router.callback_query(TaskCreation.waiting_project, F.data.startswith("doz_page:"))
+async def on_doz_page(query: CallbackQuery, state: FSMContext) -> None:
+    _, cid, page = query.data.split(":")
+    if (await state.get_data()).get("doz_client_id") != int(cid):
+        raise ValueError("Начните дозаказ заново")
+    async with session_scope() as session:
+        projects = await ProjectService(session).list_for_client(int(cid))
+    await query.answer()
+    await query.message.edit_text(
+        "Выберите проект:", reply_markup=kb.doz_project_picker(int(cid), projects, int(page))
+    )
+
+
+@router.callback_query(TaskCreation.waiting_project, F.data.startswith("doz_project:"))
+async def on_doz_project(query: CallbackQuery, state: FSMContext) -> None:
+    _, cid, pid = query.data.split(":")
+    cid, pid = int(cid), int(pid) or None
+    if (await state.get_data()).get("doz_client_id") != cid:
+        raise ValueError("Начните дозаказ заново")
+    async with session_scope() as session:
+        await validate_project(session, cid, pid)
+    await state.update_data(doz_project_id=pid)
+    await state.set_state(TaskCreation.waiting_amount)
+    await query.answer()
+    await query.message.edit_text(
+        "Введите сумму дозаказа, например 1500:", reply_markup=kb.back_to_main()
+    )
+
+
+async def _save_task(message: Message, state: FSMContext, amount, title: str) -> None:
+    data = await state.get_data()
+    source = SourceData.from_message(
+        chat_id=data.get("doz_chat_id"),
+        message_id=data.get("doz_message_id"),
+        forwarded_user_id=data.get("doz_forwarded_user_id"),
+        original_text=data.get("doz_text"),
+        source_type="TELEGRAM_FORWARD" if data.get("doz_dedup_key") else "MANUAL",
+    )
+    # Manual entry is also durable against a redelivered final input message.
+    from dataclasses import replace
+
+    source = replace(
+        source,
+        dedup_key=data.get("doz_dedup_key") or f"manual:{message.chat.id}:{message.message_id}",
+    )
+    async with session_scope() as session:
+        svc = TaskService(session, get_settings().timezone)
+        task = await svc.create_unique_from_source(
+            data["doz_client_id"],
+            title,
+            project_id=data.get("doz_project_id"),
+            description=data.get("doz_text") or None,
+            amount=amount,
+            source=source,
+        )
+    await state.clear()
+    await message.answer(
+        f"✅ Создано: {escape(task.title)}\n{format_money(task.amount)}",
+        reply_markup=kb.task_actions(task.id, task.status, task.client_id),
+    )
 
 
 @router.message(TaskCreation.waiting_amount)
 async def on_doz_amount(message: Message, state: FSMContext) -> None:
-    try:
-        amount = to_decimal(message.text or "")
-    except Exception:
-        await message.answer("Не удалось распознать сумму. Введите число, например: 1500")
-        return
-
+    amount = to_decimal(message.text or "")
     data = await state.get_data()
-    client_id = data.get("doz_client_id")
-    project_id = data.get("doz_project_id")
-    text = data.get("doz_text", "")
-    title = _title_from_text(text)
+    if not data.get("doz_text"):
+        await state.update_data(doz_amount=str(amount))
+        await state.set_state(TaskCreation.waiting_title)
+        await message.answer("Введите название задачи:", reply_markup=kb.back_to_main())
+        return
+    await _save_task(message, state, amount, _title_from_text(data["doz_text"]))
 
-    source = SourceData(
-        telegram_chat_id=data.get("doz_chat_id"),
-        telegram_message_id=data.get("doz_message_id"),
-        forwarded_user_id=data.get("doz_forwarded_user_id"),
-        original_text=text or None,
-        dedup_key=f"chat:{data.get('doz_chat_id')}:msg:{data.get('doz_message_id')}",
-    )
 
-    async with session_scope() as session:
-        svc = TaskService(session, tz_name=get_settings().timezone)
-        try:
-            task = await svc.create_unique_from_source(
-                client_id,
-                title,
-                project_id=project_id,
-                description=text or None,
-                amount=amount,
-                source=source,
-            )
-        except Exception as exc:
-            await state.clear()
-            await message.answer(f"Не удалось создать задачу: {exc}")
-            return
-
-    await state.clear()
-    await message.answer(
-        f"✅ Дозаказ создан:\n{task.title}\nСумма: {format_money(task.amount, task.currency)}",
-        reply_markup=kb.client_card(client_id),
-    )
-
+@router.message(TaskCreation.waiting_title)
+async def on_doz_title(message: Message, state: FSMContext) -> None:
+    title = (message.text or "").strip()
+    if not 1 <= len(title) <= 500:
+        raise ValueError("Введите название длиной от 1 до 500 символов")
+    await _save_task(message, state, to_decimal((await state.get_data())["doz_amount"]), title)

@@ -19,7 +19,7 @@ class ClientRepository:
         stmt = select(Client).where(Client.telegram_user_id == telegram_user_id)
         return await self.session.scalar(stmt)
 
-    async def list_active(self, offset: int = 0, limit: int = 20) -> list[Client]:
+    async def list_active(self, offset: int = 0, limit: int | None = 20) -> list[Client]:
         stmt = (
             select(Client)
             .where(Client.archived_at.is_(None))

@@ -23,8 +23,10 @@ class RecurringRepository:
     async def list_for_client(
         self, client_id: int, include_inactive: bool = False
     ) -> list[RecurringCharge]:
-        stmt = select(RecurringCharge).where(RecurringCharge.client_id == client_id).order_by(
-            RecurringCharge.title
+        stmt = (
+            select(RecurringCharge)
+            .where(RecurringCharge.client_id == client_id)
+            .order_by(RecurringCharge.title)
         )
         if not include_inactive:
             stmt = stmt.where(RecurringCharge.is_active.is_(True))

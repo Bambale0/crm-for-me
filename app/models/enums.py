@@ -38,6 +38,7 @@ class RecurringFrequency(str, enum.Enum):
 
 
 class ReminderStatus(str, enum.Enum):
+    CANCELLED = "CANCELLED"
     PENDING = "PENDING"
     DONE = "DONE"
 

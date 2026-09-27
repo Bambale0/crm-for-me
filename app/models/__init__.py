@@ -3,9 +3,9 @@
 from app.models.billing import BillingPeriod, InvoiceItem, Payment
 from app.models.client import Client, ClientField, ClientNote
 from app.models.project import Project, ProjectField, ProjectNote
+from app.models.recurring import RecurringCharge
 from app.models.reminder import Reminder
 from app.models.task import Task, TaskSource
-from app.models.recurring import RecurringCharge
 
 __all__ = [
     "Client",

@@ -8,6 +8,8 @@ from app.models.enums import ProjectStatus
 from app.models.project import Project, ProjectField
 from app.repositories.project import ProjectRepository
 from app.services.errors import NotFoundError
+from app.services.validation import lock_client
+from app.utils.time import now_utc
 
 
 class ProjectService:
@@ -15,12 +17,11 @@ class ProjectService:
         self.session = session
         self.repo = ProjectRepository(session)
 
-    async def create(
-        self, client_id: int, name: str, description: str | None = None
-    ) -> Project:
+    async def create(self, client_id: int, name: str, description: str | None = None) -> Project:
         name = (name or "").strip()
-        if not name:
+        if not name or len(name) > 255:
             raise ValueError("name is required")
+        await lock_client(self.session, client_id)
         project = Project(
             client_id=client_id,
             name=name,
@@ -43,8 +44,20 @@ class ProjectService:
 
     async def add_field(self, project_id: int, name: str, value: str) -> ProjectField:
         await self.get(project_id)
+        if not name.strip() or len(name.strip()) > 255 or not value.strip():
+            raise ValueError("Введите название и значение поля")
         field = ProjectField(project_id=project_id, name=name.strip(), value=value)
         return await self.repo.add_field(field)
 
     async def list_fields(self, project_id: int) -> list[ProjectField]:
         return await self.repo.list_fields(project_id)
+
+    async def set_archived(self, entity_id: int, archived: bool) -> Project:
+        entity = await self.get(entity_id)
+        await lock_client(self.session, entity.client_id)
+        entity.archived_at = (entity.archived_at or now_utc()) if archived else None
+        entity.status = (
+            ProjectStatus.ARCHIVED.value if entity.archived_at else ProjectStatus.ACTIVE.value
+        )
+        await self.session.flush()
+        return entity

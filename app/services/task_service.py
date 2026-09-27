@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timezone
 from decimal import Decimal
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import TASK_TRANSITIONS, BillingStatus, TaskStatus
@@ -17,7 +19,8 @@ from app.services.errors import (
     InvoiceIssuedError,
     NotFoundError,
 )
-from app.utils.money import quantize
+from app.services.validation import lock_client, validate_project
+from app.utils.money import to_decimal, validate_currency
 from app.utils.time import local_month, now_utc
 
 
@@ -82,15 +85,16 @@ class TaskService:
         source: SourceData | None = None,
     ) -> Task:
         title = (title or "").strip()
-        if not title:
+        if not title or len(title) > 500:
             raise ValueError("title is required")
+        await validate_project(self.session, client_id, project_id)
         task = Task(
             client_id=client_id,
             project_id=project_id,
             title=title,
             description=(description or None),
-            amount=quantize(Decimal(str(amount))),
-            currency=currency,
+            amount=to_decimal(amount),
+            currency=validate_currency(currency),
             status=TaskStatus.NEW.value,
         )
         await self.repo.add(task)
@@ -132,21 +136,26 @@ class TaskService:
         Protects against double-processing a forwarded message (e.g. double
         callback). Raises AlreadyExistsError when the dedup key is already used.
         """
+        await lock_client(self.session, client_id)
         if source.dedup_key:
             existing = await self.find_source_by_dedup(source.dedup_key)
             if existing is not None:
-                raise AlreadyExistsError(
-                    f"Task already exists for source {source.dedup_key}"
+                raise AlreadyExistsError(f"Task already exists for source {source.dedup_key}")
+        try:
+            async with self.session.begin_nested():
+                return await self.create(
+                    client_id,
+                    title,
+                    project_id=project_id,
+                    description=description,
+                    amount=amount,
+                    currency=currency,
+                    source=source,
                 )
-        return await self.create(
-            client_id,
-            title,
-            project_id=project_id,
-            description=description,
-            amount=amount,
-            currency=currency,
-            source=source,
-        )
+        except IntegrityError:
+            if source.dedup_key and await self.find_source_by_dedup(source.dedup_key):
+                raise AlreadyExistsError("Задача из этого сообщения уже создана") from None
+            raise
 
     async def get(self, task_id: int) -> Task:
         task = await self.repo.get(task_id)
@@ -155,6 +164,12 @@ class TaskService:
         return task
 
     async def set_status(self, task: Task, new_status: TaskStatus) -> Task:
+        await lock_client(self.session, task.client_id)
+        await self.session.refresh(task)
+        for field in ("started_at", "completed_at", "cancelled_at"):
+            value = getattr(task, field)
+            if value is not None and value.tzinfo is None:
+                setattr(task, field, value.replace(tzinfo=timezone.utc))
         current = TaskStatus(task.status)
         if current == new_status:
             return task  # idempotent
@@ -162,8 +177,16 @@ class TaskService:
         if new_status not in TASK_TRANSITIONS[current]:
             raise InvalidTransitionError(f"Cannot transition {current} -> {new_status}")
 
-        task.status = new_status.value
         now = now_utc()
+        if new_status == TaskStatus.DONE:
+            year, month = local_month(now, self.tz)
+            period = await self.billing.get_or_create_period(task.client_id, year, month)
+            period = await self.billing.lock_period(period.id)
+            if period.status != BillingStatus.DRAFT.value:
+                raise InvoiceIssuedError(
+                    "Счёт за этот месяц уже выставлен; задача оставлена без изменений"
+                )
+        task.status = new_status.value
 
         if new_status == TaskStatus.IN_PROGRESS:
             if task.started_at is None:
@@ -213,19 +236,26 @@ class TaskService:
         amount: Decimal | str | None = None,
         project_id: int | None = None,
     ) -> Task:
+        await lock_client(self.session, task.client_id)
+        await self.session.refresh(task)
+        for field in ("started_at", "completed_at", "cancelled_at"):
+            value = getattr(task, field)
+            if value is not None and value.tzinfo is None:
+                setattr(task, field, value.replace(tzinfo=timezone.utc))
         if amount is not None:
             await self._ensure_amount_editable(task)
 
         if title is not None:
             title = title.strip()
-            if not title:
+            if not title or len(title) > 500:
                 raise ValueError("title cannot be empty")
             task.title = title
         if description is not None:
             task.description = description
         if amount is not None:
-            task.amount = quantize(Decimal(str(amount)))
+            task.amount = to_decimal(amount)
         if project_id is not None:
+            await validate_project(self.session, task.client_id, project_id)
             task.project_id = project_id
 
         await self.session.flush()
@@ -239,7 +269,7 @@ class TaskService:
     async def _ensure_amount_editable(self, task: Task) -> None:
         if task.billing_period_id is None:
             return
-        period = await self.billing.get_period(task.billing_period_id)
+        period = await self.billing.lock_period(task.billing_period_id)
         if period.status != BillingStatus.DRAFT.value:
             raise InvoiceIssuedError(
                 f"Task {task.id} belongs to a {period.status} invoice; amount is frozen"
@@ -253,4 +283,3 @@ class TaskService:
 
     async def list_all(self, status: TaskStatus | None = None) -> list[Task]:
         return await self.repo.list_all(status=status)
-

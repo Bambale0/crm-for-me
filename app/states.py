@@ -1,12 +1,10 @@
-"""FSM states for short dialogs."""
+"""Short dialogs; committed business data lives in PostgreSQL."""
 
 from aiogram.fsm.state import State, StatesGroup
 
 
 class ClientCreation(StatesGroup):
     waiting_name = State()
-    waiting_telegram_id = State()
-    waiting_comment = State()
 
 
 class ProjectCreation(StatesGroup):
@@ -25,3 +23,27 @@ class SearchFlow(StatesGroup):
 
 class PaymentFlow(StatesGroup):
     waiting_amount = State()
+
+
+class EditFlow(StatesGroup):
+    value = State()
+
+
+class FieldFlow(StatesGroup):
+    name = State()
+    value = State()
+
+
+class NoteFlow(StatesGroup):
+    text = State()
+
+
+class RecurringFlow(StatesGroup):
+    title = State()
+    amount = State()
+    start = State()
+
+
+class ReminderFlow(StatesGroup):
+    text = State()
+    when = State()

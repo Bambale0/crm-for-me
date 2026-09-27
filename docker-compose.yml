@@ -4,10 +4,10 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: crm
-      POSTGRES_PASSWORD: crm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: crm
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -25,7 +25,10 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://crm:crm@db:5432/crm
+      DATABASE_URL: postgresql+asyncpg://crm:${POSTGRES_PASSWORD}@db:5432/crm
+      ALEMBIC_DATABASE_URL: postgresql+asyncpg://crm:${POSTGRES_PASSWORD}@db:5432/crm
+    stop_grace_period: 30s
+    init: true
 
 volumes:
   pgdata:

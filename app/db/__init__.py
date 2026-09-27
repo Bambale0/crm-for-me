@@ -17,7 +17,7 @@ from app.config import get_settings
 def create_engine(url: str | None = None):
     """Create an async engine for the given (or configured) URL."""
     url = url or get_settings().database_url
-    return create_async_engine(url, pool_pre_ping=True)
+    return create_async_engine(url, pool_pre_ping=True, hide_parameters=True)
 
 
 def create_session_factory(engine) -> async_sessionmaker[AsyncSession]:
@@ -45,4 +45,3 @@ async def session_scope():
         except Exception:
             await session.rollback()
             raise
-

@@ -31,6 +31,10 @@ class OwnerOnlyMiddleware(BaseMiddleware):
         if user_id != self.owner_id:
             logger.warning("Unauthorized access attempt", extra={"user_id": user_id})
             return None
+        inner = (event.message or event.callback_query) if isinstance(event, Update) else event
+        message = inner.message if isinstance(inner, CallbackQuery) else inner
+        if not isinstance(message, Message) or message.chat.type != "private":
+            return None
         logger.debug("Owner update", extra={"user_id": user_id})
         return await handler(event, data)
 

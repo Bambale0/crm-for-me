@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import ReminderStatus
 from app.models.reminder import Reminder
+from app.services.errors import NotFoundError
 from app.utils.time import now_utc
 
 
@@ -25,6 +26,8 @@ class ReminderService:
         task_id: int | None = None,
         billing_period_id: int | None = None,
     ) -> Reminder:
+        if not text.strip() or len(text) > 1500 or remind_at.tzinfo is None:
+            raise ValueError("Введите текст и дату с часовым поясом")
         reminder = Reminder(
             client_id=client_id,
             task_id=task_id,
@@ -43,10 +46,37 @@ class ReminderService:
             Reminder.status == ReminderStatus.PENDING.value,
             Reminder.remind_at <= now,
         )
-        return list((await self.session.scalars(stmt)).all())
+        return list(
+            (
+                await self.session.scalars(
+                    stmt.order_by(Reminder.id).with_for_update(skip_locked=True)
+                )
+            ).all()
+        )
 
     async def complete(self, reminder: Reminder) -> Reminder:
         reminder.status = ReminderStatus.DONE.value
         reminder.completed_at = now_utc()
         await self.session.flush()
+        return reminder
+
+    async def get(self, reminder_id: int) -> Reminder:
+        reminder = await self.session.get(Reminder, reminder_id)
+        if reminder is None:
+            raise NotFoundError("Напоминание не найдено")
+        return reminder
+
+    async def list_pending(self) -> list[Reminder]:
+        stmt = (
+            select(Reminder)
+            .where(Reminder.status == ReminderStatus.PENDING.value)
+            .order_by(Reminder.remind_at)
+        )
+        return list((await self.session.scalars(stmt)).all())
+
+    async def cancel(self, reminder: Reminder) -> Reminder:
+        await self.session.refresh(reminder, with_for_update=True)
+        if reminder.status == ReminderStatus.PENDING.value:
+            reminder.status = ReminderStatus.CANCELLED.value
+            await self.session.flush()
         return reminder

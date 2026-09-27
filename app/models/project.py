@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
 from app.models.enums import ProjectStatus
 
+if TYPE_CHECKING:
+    from app.models.client import Client
+
 
 class Project(TimestampMixin, Base):
     __tablename__ = "projects"
-    __table_args__ = (
-        Index("ix_projects_client_id", "client_id"),
-    )
+    __table_args__ = (Index("ix_projects_client_id", "client_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     client_id: Mapped[int] = mapped_column(
@@ -23,8 +25,10 @@ class Project(TimestampMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(16), default=ProjectStatus.ACTIVE.value, nullable=False)
-    archived_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), default=ProjectStatus.ACTIVE.value, nullable=False
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     client: Mapped["Client"] = relationship(back_populates="projects")
     fields: Mapped[list["ProjectField"]] = relationship(

@@ -1,13 +1,29 @@
-"""Bot handlers package — routers are assembled in register_all_handlers()."""
+"""Router assembly, with fallback handlers last."""
 
 from aiogram import Router
 
-from app.handlers import billing, client, common, forward, task
+from app.handlers import (
+    billing,
+    client,
+    common,
+    details,
+    errors,
+    forward,
+    recurring,
+    reminder,
+    task,
+)
 
 
 def register_all_handlers(router: Router) -> None:
-    router.include_router(common.router)
-    router.include_router(forward.router)
-    router.include_router(client.router)
-    router.include_router(task.router)
-    router.include_router(billing.router)
+    router.include_routers(
+        common.router,
+        forward.router,
+        client.router,
+        task.router,
+        details.router,
+        recurring.router,
+        reminder.router,
+        billing.router,
+        errors.router,
+    )

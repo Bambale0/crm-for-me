@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Importing the models registers every mapped table on Base.metadata.
 import app.models  # noqa: F401
+from alembic import context
 from app.config import get_settings
 from app.db.base import Base
 
@@ -24,7 +24,7 @@ target_metadata = Base.metadata
 
 
 def _get_url() -> str:
-    return get_settings().alembic_database_url
+    return get_settings().alembic_database_url or get_settings().database_url
 
 
 def run_migrations_offline() -> None:

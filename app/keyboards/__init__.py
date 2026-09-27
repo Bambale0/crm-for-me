@@ -1,10 +1,8 @@
-"""Inline keyboard builders."""
+"""Compact inline navigation with pagination for every entity list."""
 
-from __future__ import annotations
+from aiogram.types import InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
-# Callback prefixes
 MAIN = "main"
 CLIENTS = "clients"
 CLIENT = "client"
@@ -24,110 +22,165 @@ BILLING_ISSUE = "billing_issue"
 PAY = "pay"
 SEARCH = "search"
 MONTH = "month"
+PAGE_SIZE = 5
 
 
-def _btn(text: str, callback_data: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton(text=text, callback_data=callback_data)
+def buttons(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for row in rows:
+        for label, data in row:
+            builder.button(text=label[:64], callback_data=data)
+    builder.adjust(*(len(row) for row in rows))
+    return builder.as_markup()
+
+
+def paged(
+    entries: list[tuple[str, str]], prefix: str, page: int = 0, extra=None
+) -> InlineKeyboardMarkup:
+    page = max(0, min(page, max(0, (len(entries) - 1) // PAGE_SIZE)))
+    rows = [[entry] for entry in entries[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]]
+    nav = []
+    if page:
+        nav.append(("⬅️", f"{prefix}:{page - 1}"))
+    if (page + 1) * PAGE_SIZE < len(entries):
+        nav.append(("➡️", f"{prefix}:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.extend(extra or [[("🏠 В меню", MAIN)]])
+    return buttons(rows)
 
 
 def main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_btn("👥 Клиенты", CLIENTS), _btn("🔎 Поиск", SEARCH)],
-            [_btn("📊 Дашборд (текущий месяц)", "dashboard")],
+    return buttons(
+        [
+            [("👥 Клиенты", CLIENTS), ("🔎 Поиск", SEARCH)],
+            [("📊 Дашборд", "dashboard"), ("⏰ Напоминания", "reminders:0")],
         ]
     )
 
 
 def back_to_main() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[_btn("🏠 В меню", MAIN)]])
+    return buttons([[("🏠 В меню", MAIN)]])
 
 
 def clients_list(clients, page: int = 0) -> InlineKeyboardMarkup:
-    rows = [[_btn(f"{c.display_name}", f"{CLIENT}:{c.id}")] for c in clients]
-    rows.append([_btn("➕ Новый клиент", CLIENT_NEW), _btn("🏠 В меню", MAIN)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def client_card(client_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_btn("📁 Проекты", f"{PROJECTS}:{client_id}")],
-            [_btn("✅ Задачи", f"{TASKS}:{client_id}")],
-            [_btn("➕ Дозаказ", f"{DOZ_START}:{client_id}")],
-            [_btn("🧾 Счёт за месяц", f"{BILLING}:{client_id}")],
-            [_btn("🏠 В меню", MAIN)],
-        ]
+    return paged(
+        [(c.display_name, f"client:{c.id}") for c in clients],
+        "clients",
+        page,
+        [[("➕ Новый клиент", CLIENT_NEW), ("🏠 В меню", MAIN)]],
     )
 
 
-def projects_list(client_id: int, projects) -> InlineKeyboardMarkup:
-    rows = [[_btn(p.name, f"{PROJECT}:{p.id}")] for p in projects]
-    rows.append(
+def client_card(client_id: int, forward_token: str | None = None) -> InlineKeyboardMarkup:
+    start = f"doz_start:{client_id}" + (f":{forward_token}" if forward_token else "")
+    return buttons(
         [
-            _btn("➕ Новый проект", f"{PROJECT_NEW}:{client_id}"),
-            _btn("⬅️ Клиент", f"{CLIENT}:{client_id}"),
-        ]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def project_actions(project_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_btn("✅ Задачи проекта", f"{TASKS}:{project_id}:project")],
-            [_btn("⬅️ Назад", MAIN)],
+            [("➕ Дозаказ", start)],
+            [("📁 Проекты", f"projects:{client_id}"), ("✅ Задачи", f"tasks:{client_id}")],
+            [("🧾 Счета", f"billing:{client_id}"), ("🔁 Услуги", f"recurring:{client_id}:0")],
+            [("📝 Данные и заметки", f"details:client:{client_id}"), ("🏠 В меню", MAIN)],
         ]
     )
 
 
-def tasks_list(client_id: int, tasks, context: str = "client") -> InlineKeyboardMarkup:
+def projects_list(client_id: int, projects, page: int = 0) -> InlineKeyboardMarkup:
+    return paged(
+        [(p.name, f"project:{p.id}") for p in projects],
+        f"projects:{client_id}",
+        page,
+        [[("➕ Новый проект", f"project_new:{client_id}"), ("⬅️ Клиент", f"client:{client_id}")]],
+    )
+
+
+def project_actions(
+    project_id: int, client_id: int = 0, status: str = "ACTIVE"
+) -> InlineKeyboardMarkup:
+    rows = [
+        [("✅ Задачи", f"tasks:{project_id}:project")],
+        [("📝 Данные и заметки", f"details:project:{project_id}")],
+    ]
+    if status != "ARCHIVED":
+        rows.append([("📦 В архив", f"archive_ask:project:{project_id}")])
+    rows.append([("⬅️ Клиент", f"client:{client_id}")])
+    return buttons(rows)
+
+
+def tasks_list(
+    client_id: int, tasks, context: str = "client", page: int = 0
+) -> InlineKeyboardMarkup:
+    marks = {"NEW": "🆕", "IN_PROGRESS": "⏳", "DONE": "✅", "CANCELLED": "❌"}
+    return paged(
+        [(f"{marks[t.status]} {t.title[:40]}", f"task:{t.id}") for t in tasks],
+        f"tasks:{client_id}:{context}",
+        page,
+        [[("⬅️ Назад", f"{context}:{client_id}")]],
+    )
+
+
+def task_actions(task_id: int, status: str = "NEW", client_id: int = 0) -> InlineKeyboardMarkup:
     rows = []
-    for t in tasks:
-        mark = {"NEW": "🆕", "IN_PROGRESS": "⏳", "DONE": "✅", "CANCELLED": "❌"}.get(t.status, "")
-        rows.append([_btn(f"{mark} {t.title[:40]}", f"{TASK}:{t.id}")])
-    back = f"{CLIENT}:{client_id}" if context == "client" else MAIN
-    rows.append([_btn("⬅️ Назад", back)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def task_actions(task_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    if status == "NEW":
+        rows.append([("⏳ В работе", f"task_progress:{task_id}")])
+    if status in ("NEW", "IN_PROGRESS"):
+        rows.extend(
             [
-                _btn("⏳ В работе", f"{TASK_PROGRESS}:{task_id}"),
-                _btn("✅ Выполнено", f"{TASK_DONE}:{task_id}"),
-            ],
-            [_btn("❌ Отменить", f"{TASK_CANCEL}:{task_id}")],
-            [_btn("⬅️ В меню", MAIN)],
-        ]
+                [("✅ Выполнено", f"task_done:{task_id}")],
+                [("❌ Отменить", f"task_cancel_ask:{task_id}")],
+            ]
+        )
+    rows.append(
+        [("✏️ Название", f"task_edit:{task_id}:title"), ("💰 Цена", f"task_edit:{task_id}:amount")]
+    )
+    rows.append([("📝 Описание", f"task_edit:{task_id}:description")])
+    rows.append([("⬅️ Задачи", f"tasks:{client_id}")])
+    return buttons(rows)
+
+
+def doz_project_picker(client_id: int, projects, page: int = 0) -> InlineKeyboardMarkup:
+    return paged(
+        [(p.name, f"doz_project:{client_id}:{p.id}") for p in projects],
+        f"doz_page:{client_id}",
+        page,
+        [
+            [("Без проекта", f"doz_project:{client_id}:0")],
+            [("➕ Новый проект", f"project_new:{client_id}:doz"), ("🏠 В меню", MAIN)],
+        ],
     )
 
 
-def doz_project_picker(client_id: int, projects) -> InlineKeyboardMarkup:
-    rows = [[_btn(p.name, f"{DOZ_PROJECT}:{client_id}:{p.id}")] for p in projects]
-    rows.append([_btn("Без проекта", f"{DOZ_PROJECT}:{client_id}:0")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def billing_actions(period_id: int, status: str) -> InlineKeyboardMarkup:
+def billing_actions(
+    period_id: int, status: str, client_id: int = 0, year: int = 0, month: int = 0
+) -> InlineKeyboardMarkup:
     rows = []
     if status == "DRAFT":
-        rows.append([_btn("🧾 Выставить счёт", f"{BILLING_ISSUE}:{period_id}")])
+        rows.append([("🧾 Выставить счёт", f"billing_issue_ask:{period_id}")])
     if status in ("ISSUED", "PARTIALLY_PAID"):
-        rows.append([_btn("💳 Принять оплату", f"{PAY}:{period_id}")])
-    rows.append([_btn("⬅️ В меню", MAIN)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+        rows.append([("💳 Принять оплату", f"pay:{period_id}")])
+    rows.append(
+        [("📋 Позиции", f"invoice_items:{period_id}:0"), ("💳 Оплаты", f"payments:{period_id}:0")]
+    )
+    if year:
+        ordinal = year * 12 + month - 1
+        prev, nxt = ordinal - 1, ordinal + 1
+        rows.append(
+            [
+                ("⬅️ Месяц", f"billing:{client_id}:{prev // 12}:{prev % 12 + 1}"),
+                ("Месяц ➡️", f"billing:{client_id}:{nxt // 12}:{nxt % 12 + 1}"),
+            ]
+        )
+    rows.append([("⬅️ Клиент", f"client:{client_id}")])
+    return buttons(rows)
 
 
 def month_nav(year: int, month: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    return buttons(
+        [
             [
-                _btn("⬅️", f"{MONTH}:{year}:{month}:-1"),
-                _btn(f"{month:02d}.{year}", "noop"),
-                _btn("➡️", f"{MONTH}:{year}:{month}:+1"),
+                ("⬅️", f"month:{year}:{month}:-1"),
+                (f"{month:02d}.{year}", "noop"),
+                ("➡️", f"month:{year}:{month}:+1"),
             ],
-            [_btn("🏠 В меню", MAIN)],
+            [("👥 По клиентам", f"month_clients:{year}:{month}:0"), ("🏠 В меню", MAIN)],
         ]
     )
