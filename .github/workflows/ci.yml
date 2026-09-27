@@ -29,8 +29,8 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements.lock && pip install -e '.[dev]'
-      - run: ruff check app tests alembic
-      - run: ruff format --check app tests alembic
+      - run: ruff check app tests alembic deploy
+      - run: ruff format --check app tests alembic deploy
       - run: alembic upgrade head
       - run: alembic check
       - run: pytest -q --cov=app --cov-report=term-missing --cov-fail-under=80

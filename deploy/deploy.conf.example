@@ -1,0 +1,7 @@
+CRM_DEPLOY_DIR=/opt/crm-for-me
+CRM_DEPLOY_STATE=/var/lib/crm-for-me-deploy
+CRM_DEPLOY_REPO=Bambale0/crm-for-me
+CRM_DEPLOY_PROJECT=crm-for-me
+CRM_DEPLOY_IMAGE=crm-for-me-bot
+CRM_DEPLOY_DB_USER=crm
+CRM_DEPLOY_DB_NAME=crm
