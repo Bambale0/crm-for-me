@@ -1,0 +1,37 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: crm_test
+          POSTGRES_PASSWORD: crm_test
+          POSTGRES_DB: crm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crm_test -d crm_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://crm_test:crm_test@localhost:5432/crm_test
+      TEST_DATABASE_URL: postgresql+asyncpg://crm_test:crm_test@localhost:5432/crm_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.lock && pip install -e '.[dev]'
+      - run: ruff check app tests alembic
+      - run: ruff format --check app tests alembic
+      - run: alembic upgrade head
+      - run: alembic check
+      - run: pytest -q --cov=app --cov-report=term-missing --cov-fail-under=80
+      - run: docker build -t crm-for-me:ci .
