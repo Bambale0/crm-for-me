@@ -451,3 +451,111 @@ async def test_transfer_selection_pagination_and_cancel(harness):
     await h.click("Отмена")
     async with app.db.session_factory() as session:
         assert (await BillingService(session).get_period(source.id)).status == "ISSUED"
+
+
+async def test_task_list_accepts_typed_title_in_current_project(harness):
+    from app.services.client_service import ClientService
+    from app.services.project_service import ProjectService
+
+    h = harness
+    async with app.db.session_factory.begin() as session:
+        await ClientService(session).create("Other client")
+        cid = (await ClientService(session).create("Client")).id
+        project = await ProjectService(session).create(cid, "Website")
+        pid = project.id
+    await h.send(callback=f"tasks:{pid}:project")
+    assert "Задач пока нет" in h.last.text
+    await h.send("перекинуть домен")
+    assert "Введите сумму" in h.last.text
+    await h.send("1500")
+    async with app.db.session_factory() as session:
+        task = await session.scalar(select(Task))
+        assert (task.title, task.client_id, task.project_id, task.amount) == (
+            "перекинуть домен",
+            cid,
+            pid,
+            Decimal("1500"),
+        )
+    await h.click("Задачи")
+    assert "перекинуть домен" in str(h.last.reply_markup)
+
+
+async def test_add_task_button_in_client_list_validates_input(harness):
+    from app.services.client_service import ClientService
+
+    h = harness
+    async with app.db.session_factory.begin() as session:
+        cid = (await ClientService(session).create("Client")).id
+    await h.send(callback=f"tasks:{cid}")
+    await h.click("Добавить задачу")
+    assert "Введите название" in h.last.text
+    await h.send("x" * 501)
+    assert "500" in h.last.text
+    await h.send("Проверить <домен>")
+    assert "&lt;домен&gt;" in h.last.text
+    await h.send("не знаю")
+    async with app.db.session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Task)) == 0
+    await h.send("0")
+    async with app.db.session_factory() as session:
+        task = await session.scalar(select(Task))
+        assert task.title == "Проверить <домен>" and task.project_id is None
+        assert task.amount == 0
+
+
+async def test_leaving_task_list_clears_quick_creation_context(harness):
+    from app.services.client_service import ClientService
+
+    h = harness
+    async with app.db.session_factory.begin() as session:
+        cid = (await ClientService(session).create("Client")).id
+    await h.send(callback=f"tasks:{cid}")
+    await h.click("Назад")
+    await h.send("Случайный текст")
+    await h.send(callback=f"tasks:{cid}")
+    await h.send("Отменяемая задача")
+    await h.send("/cancel")
+    await h.send("5000")
+    async with app.db.session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Task)) == 0
+
+
+async def test_quick_task_refuses_project_archived_during_entry(harness):
+    from app.services.client_service import ClientService
+    from app.services.project_service import ProjectService
+
+    h = harness
+    async with app.db.session_factory.begin() as session:
+        cid = (await ClientService(session).create("Client")).id
+        pid = (await ProjectService(session).create(cid, "Website")).id
+    await h.send(callback=f"task_new:{pid}:project")
+    await h.send("перекинуть домен")
+    async with app.db.session_factory.begin() as session:
+        await ProjectService(session).set_archived(pid, True)
+    await h.send("1500")
+    assert "архивирован" in h.last.text
+    await h.send(callback=f"tasks:{pid}:project")
+    assert "Добавить задачу" not in str(h.last.reply_markup)
+    async with app.db.session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Task)) == 0
+
+
+async def test_quick_task_from_paginated_list_keeps_project(harness):
+    from app.services.client_service import ClientService
+    from app.services.project_service import ProjectService
+    from app.services.task_service import TaskService
+
+    h = harness
+    async with app.db.session_factory.begin() as session:
+        cid = (await ClientService(session).create("Client")).id
+        pid = (await ProjectService(session).create(cid, "Website")).id
+        for index in range(6):
+            await TaskService(session).create(cid, f"Existing {index}", project_id=pid)
+    await h.send(callback=f"tasks:{pid}:project")
+    await h.click("➡️")
+    await h.click("Добавить задачу")
+    await h.send("New task")
+    await h.send("100")
+    async with app.db.session_factory() as session:
+        task = await session.scalar(select(Task).where(Task.title == "New task"))
+        assert task.project_id == pid and task.client_id == cid
