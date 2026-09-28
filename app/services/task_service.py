@@ -258,3 +258,6 @@ class TaskService:
 
     async def list_all(self, status: TaskStatus | None = None) -> list[Task]:
         return await self.repo.list_all(status=status)
+
+    async def list_active(self) -> list[Task]:
+        return await self.repo.list_active()

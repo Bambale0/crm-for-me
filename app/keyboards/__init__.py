@@ -50,12 +50,15 @@ def paged(
     return buttons(rows)
 
 
-def main_menu() -> InlineKeyboardMarkup:
-    return buttons(
+def main_menu(tasks=(), page: int = 0) -> InlineKeyboardMarkup:
+    return paged(
+        [(f"{i + 1}. {task.title}", f"task:{task.id}") for i, task in enumerate(tasks)],
+        MAIN,
+        page,
         [
             [("👥 Клиенты", CLIENTS), ("🔎 Поиск", SEARCH)],
             [("📊 Дашборд", "dashboard"), ("⏰ Напоминания", "reminders:0")],
-        ]
+        ],
     )
 
 
@@ -137,7 +140,7 @@ def task_actions(
     )
     rows.append([("📝 Описание", f"task_edit:{task_id}:description")])
     back = f"tasks:{project_id}:project" if project_id is not None else f"tasks:{client_id}"
-    rows.append([("⬅️ Задачи", back)])
+    rows.append([("⬅️ Задачи", back), ("🏠 Главное меню", MAIN)])
     return buttons(rows)
 
 

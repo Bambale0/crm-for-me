@@ -83,3 +83,21 @@ class TaskSource(TimestampMixin, Base):
     dedup_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     task: Mapped["Task"] = relationship(back_populates="source")
+
+
+class TaskForwardMessage(Base):
+    """Every delivered message in an automatically grouped forwarded task."""
+
+    __tablename__ = "task_forward_messages"
+    __table_args__ = (
+        Index("ix_task_forward_messages_task_id", "task_id"),
+        Index("uq_task_forward_messages_dedup", "dedup_key", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    dedup_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    original_text: Mapped[str | None] = mapped_column(Text, nullable=True)

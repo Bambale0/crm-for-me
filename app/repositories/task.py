@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.models.enums import TaskStatus
-from app.models.task import Task, TaskSource
+from app.models.task import Task, TaskForwardMessage, TaskSource
 
 
 class TaskRepository:
@@ -37,8 +38,24 @@ class TaskRepository:
             stmt = stmt.where(Task.status == status.value)
         return list((await self.session.scalars(stmt)).all())
 
+    async def list_active(self) -> list[Task]:
+        stmt = (
+            select(Task)
+            .where(Task.status.in_((TaskStatus.NEW.value, TaskStatus.IN_PROGRESS.value)))
+            .options(joinedload(Task.client), joinedload(Task.project))
+            .order_by(Task.created_at.desc(), Task.id.desc())
+        )
+        return list((await self.session.scalars(stmt)).all())
+
     async def find_source_by_dedup(self, dedup_key: str) -> TaskSource | None:
-        stmt = select(TaskSource).where(TaskSource.dedup_key == dedup_key)
+        stmt = (
+            select(TaskSource)
+            .outerjoin(TaskForwardMessage, TaskForwardMessage.task_id == TaskSource.task_id)
+            .where(
+                or_(TaskSource.dedup_key == dedup_key, TaskForwardMessage.dedup_key == dedup_key)
+            )
+            .limit(1)
+        )
         return await self.session.scalar(stmt)
 
     async def add_source(self, source: TaskSource) -> TaskSource:
