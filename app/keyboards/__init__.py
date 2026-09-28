@@ -107,18 +107,21 @@ def project_actions(
 
 
 def tasks_list(
-    client_id: int, tasks, context: str = "client", page: int = 0
+    client_id: int, tasks, context: str = "client", page: int = 0, *, can_create: bool = True
 ) -> InlineKeyboardMarkup:
     marks = {"NEW": "🆕", "IN_PROGRESS": "⏳", "DONE": "✅", "CANCELLED": "❌"}
     return paged(
         [(f"{marks[t.status]} {t.title[:40]}", f"task:{t.id}") for t in tasks],
         f"tasks:{client_id}:{context}",
         page,
-        [[("⬅️ Назад", f"{context}:{client_id}")]],
+        ([[("➕ Добавить задачу", f"task_new:{client_id}:{context}")]] if can_create else [])
+        + [[("⬅️ Назад", f"{context}:{client_id}")]],
     )
 
 
-def task_actions(task_id: int, status: str = "NEW", client_id: int = 0) -> InlineKeyboardMarkup:
+def task_actions(
+    task_id: int, status: str = "NEW", client_id: int = 0, *, project_id: int | None = None
+) -> InlineKeyboardMarkup:
     rows = []
     if status == "NEW":
         rows.append([("⏳ В работе", f"task_progress:{task_id}")])
@@ -133,7 +136,8 @@ def task_actions(task_id: int, status: str = "NEW", client_id: int = 0) -> Inlin
         [("✏️ Название", f"task_edit:{task_id}:title"), ("💰 Цена", f"task_edit:{task_id}:amount")]
     )
     rows.append([("📝 Описание", f"task_edit:{task_id}:description")])
-    rows.append([("⬅️ Задачи", f"tasks:{client_id}")])
+    back = f"tasks:{project_id}:project" if project_id is not None else f"tasks:{client_id}"
+    rows.append([("⬅️ Задачи", back)])
     return buttons(rows)
 
 

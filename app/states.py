@@ -12,6 +12,8 @@ class ProjectCreation(StatesGroup):
 
 
 class TaskCreation(StatesGroup):
+    quick_title = State()
+    quick_amount = State()
     waiting_project = State()
     waiting_amount = State()
     waiting_title = State()
