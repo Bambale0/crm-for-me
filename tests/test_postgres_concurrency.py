@@ -335,3 +335,34 @@ async def test_payment_and_transfer_race_preserves_debt_and_history(engine):
         debt = await DashboardService(session).total_debt(cid)
         assert results.count("rejected") == 1
         assert paid + debt == Decimal("11000")
+
+
+@pytest.mark.parametrize("duplicate", [True, False])
+async def test_concurrent_forward_group_is_one_task(engine, duplicate):
+    from datetime import datetime, timezone
+
+    from app.models.task import TaskForwardMessage
+    from app.services.forward_task_service import ForwardTaskService
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory.begin() as session:
+        cid = (await ClientService(session).create("Forward client")).id
+    barrier = asyncio.Barrier(2)
+    received = datetime.now(timezone.utc)
+
+    async def forward(key):
+        async with factory.begin() as session:
+            await barrier.wait()
+            result = await ForwardTaskService(session).record(
+                cid, SourceData(dedup_key=key, original_text=key, telegram_chat_id=111), received
+            )
+            return result.task.id
+
+    ids = await asyncio.wait_for(
+        asyncio.gather(forward("a"), forward("a" if duplicate else "b")), 10
+    )
+    async with factory() as session:
+        count = await session.scalar(select(func.count()).select_from(TaskForwardMessage))
+        task_count = await session.scalar(select(func.count()).select_from(Task))
+    assert ids[0] == ids[1]
+    assert task_count == 1 and count == (1 if duplicate else 2)

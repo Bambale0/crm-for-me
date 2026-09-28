@@ -11,9 +11,12 @@ from aiogram.types import CallbackQuery, Message, MessageOriginChannel, MessageO
 from app import keyboards as kb
 from app.db import session_scope
 from app.handlers.client import _client_card_text
+from app.handlers.task import task_text
 from app.services.client_service import ClientService
 from app.services.forward_resolver import extract_forward_info
-from app.services.task_service import TaskService
+from app.services.forward_task_service import ForwardTaskService
+from app.services.project_service import ProjectService
+from app.services.task_service import SourceData, TaskService
 
 router = Router(name="forward")
 
@@ -68,9 +71,30 @@ async def on_forward(message: Message, state: FSMContext) -> None:
             fwd_token=token,
         )
         if client:
-            await state.update_data(fwd_client_id=client.id)
-            text = await _client_card_text(session, client)
-            markup = kb.client_card(client.id, token)
+            result = await ForwardTaskService(session).record(
+                client.id,
+                SourceData(
+                    telegram_chat_id=message.chat.id,
+                    telegram_message_id=message.message_id,
+                    forwarded_user_id=info.telegram_user_id,
+                    original_text=message.text or message.caption or None,
+                    dedup_key=key,
+                ),
+                message.date,
+            )
+            task = result.task
+            projects = await ProjectService(session).list_for_client(client.id)
+            heading = "✅ Создано" if result.created else "📎 Добавлено к задаче"
+            text = f"{heading}\n{task_text(task)}\nКлиент: {escape(client.display_name)}"
+            if task.project_id:
+                project = await ProjectService(session).get(task.project_id)
+                text += f"\nПроект: {escape(project.name)}"
+            text += "\n\nСумму можно изменить кнопкой «Цена»."
+            markup = kb.task_actions(task.id, task.status, client.id, project_id=task.project_id)
+            if task.project_id is None and len(projects) > 1:
+                text += "\nВыберите проект для этой задачи:"
+                markup = forwarded_project_picker(task.id, projects)
+            await state.clear()
         else:
             text = f"Отправитель: {escape(info.display_name)}.\nВыберите клиента или создайте карточку."
             markup = kb.buttons(
@@ -138,3 +162,47 @@ async def on_fwd_select(query: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(fwd_client_id=client.id)
     await query.answer()
     await query.message.edit_text(text, reply_markup=kb.client_card(client.id, token))
+
+
+def forwarded_project_picker(task_id: int, projects, page: int = 0):
+    return kb.paged(
+        [(p.name, f"fwd_task_project:{task_id}:{p.id}") for p in projects],
+        f"fwd_task_page:{task_id}",
+        page,
+        [[("Без проекта", f"fwd_task_project:{task_id}:0"), ("🏠 Главное меню", kb.MAIN)]],
+    )
+
+
+@router.callback_query(F.data.startswith("fwd_task_page:"))
+async def on_forward_task_page(query: CallbackQuery) -> None:
+    _, tid, page = query.data.split(":")
+    async with session_scope() as session:
+        task = await TaskService(session).get(int(tid))
+        projects = await ProjectService(session).list_for_client(task.client_id)
+    await query.answer()
+    await query.message.edit_text(
+        f"Задача: {escape(task.title)}\nВыберите проект:",
+        reply_markup=forwarded_project_picker(task.id, projects, int(page)),
+    )
+
+
+@router.callback_query(F.data.startswith("fwd_task_project:"))
+async def on_forward_task_project(query: CallbackQuery, state: FSMContext) -> None:
+    _, tid, pid = query.data.split(":")
+    async with session_scope() as session:
+        svc = TaskService(session)
+        task = await svc.get(int(tid))
+        if int(pid):
+            await svc.edit(task, project_id=int(pid))
+        text = task_text(task)
+        if task.project_id:
+            project = await ProjectService(session).get(task.project_id)
+            text += f"\nПроект: {escape(project.name)}"
+    await state.clear()
+    await query.answer("Сохранено")
+    await query.message.edit_text(
+        text,
+        reply_markup=kb.task_actions(
+            task.id, task.status, task.client_id, project_id=task.project_id
+        ),
+    )

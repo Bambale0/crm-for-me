@@ -1,6 +1,6 @@
 """Telegram transport is simulated; dispatcher, FSM, services and DB are real."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -75,12 +75,18 @@ async def harness(engine, monkeypatch, bot_dispatcher):
         sequence = 100
 
         async def send(
-            self, text=None, callback=None, origin=None, user=OWNER, chat_type="private"
+            self,
+            text=None,
+            callback=None,
+            origin=None,
+            user=OWNER,
+            chat_type="private",
+            received_at=None,
         ):
             self.sequence += 1
             message = {
                 "message_id": self.sequence,
-                "date": datetime.now(timezone.utc),
+                "date": received_at or datetime.now(timezone.utc),
                 "chat": {"id": OWNER, "type": chat_type},
                 "from": {"id": user, "is_bot": False, "first_name": "Owner"},
                 "text": text or "Card",
@@ -468,6 +474,7 @@ async def test_task_list_accepts_typed_title_in_current_project(harness):
     await h.send("перекинуть домен")
     assert "Введите сумму" in h.last.text
     await h.send("1500")
+    assert h.button("Главное меню") == "main"
     async with app.db.session_factory() as session:
         task = await session.scalar(select(Task))
         assert (task.title, task.client_id, task.project_id, task.amount) == (
@@ -559,3 +566,201 @@ async def test_quick_task_from_paginated_list_keeps_project(harness):
     async with app.db.session_factory() as session:
         task = await session.scalar(select(Task).where(Task.title == "New task"))
         assert task.project_id == pid and task.client_id == cid
+
+
+async def test_home_lists_only_active_tasks_and_returns_from_card(harness):
+    from app.models.enums import TaskStatus
+    from app.services.client_service import ClientService
+    from app.services.project_service import ProjectService
+    from app.services.task_service import TaskService
+
+    h = harness
+    async with app.db.session_factory.begin() as s:
+        client = await ClientService(s).create("Клиент <один>")
+        project = await ProjectService(s).create(client.id, "Сайт & бот")
+        svc = TaskService(s)
+        active = await svc.create(client.id, "Перенести <домен>", project_id=project.id)
+        working = await svc.create(client.id, "Опубликовать пост", amount="1500")
+        await svc.set_status(working, TaskStatus.IN_PROGRESS)
+        done = await svc.create(client.id, "Уже готово")
+        await svc.set_status(done, TaskStatus.DONE)
+        cancelled = await svc.create(client.id, "Уже отменено")
+        await svc.set_status(cancelled, TaskStatus.CANCELLED)
+        tid = active.id
+    await h.send(callback=f"task:{tid}")
+    await h.click("Главное меню")
+    assert "Активные задачи: 2" in h.last.text
+    assert "Перенести &lt;домен&gt;" in h.last.text
+    assert "Клиент &lt;один&gt;" in h.last.text and "Сайт &amp; бот" in h.last.text
+    assert "Опубликовать пост" in h.last.text and "1 500 ₽" in h.last.text
+    assert "Уже готово" not in h.last.text and "Уже отменено" not in h.last.text
+    await h.click("Перенести")
+    assert "Статус: Новая" in h.last.text
+    await h.click("Название")
+    await h.send(callback="main")
+    await h.send("Не менять название")
+    assert "Активные задачи: 2" in h.last.text
+    async with app.db.session_factory() as s:
+        assert (await s.get(Task, tid)).title == "Перенести <домен>"
+
+
+async def test_home_pagination_and_empty_page_after_tasks_finish(harness):
+    from app.models.enums import TaskStatus
+    from app.services.client_service import ClientService
+    from app.services.task_service import TaskService
+
+    h = harness
+    async with app.db.session_factory.begin() as s:
+        client = await ClientService(s).create("Клиент")
+        svc = TaskService(s)
+        for number in range(7):
+            await svc.create(client.id, f"Задание {number}")
+    await h.send("/start")
+    assert "Активные задачи: 7" in h.last.text
+    assert (
+        sum(
+            b.callback_data.startswith("task:")
+            for r in h.last.reply_markup.inline_keyboard
+            for b in r
+        )
+        == 5
+    )
+    await h.click("➡️")
+    assert (
+        sum(
+            b.callback_data.startswith("task:")
+            for r in h.last.reply_markup.inline_keyboard
+            for b in r
+        )
+        == 2
+    )
+    assert h.button("Клиенты") == "clients"
+    async with app.db.session_factory.begin() as s:
+        svc = TaskService(s)
+        for task in await svc.list_all():
+            await svc.set_status(task, TaskStatus.CANCELLED)
+    await h.send(callback="main:1")
+    assert "Активных задач нет" in h.last.text
+    assert "за всё время" in h.last.text
+    assert "Долг: 0 ₽" in h.last.text
+
+
+async def test_empty_home_money_totals_across_months_without_double_count(harness):
+    from app.models.enums import BillingStatus
+    from app.services.client_service import ClientService
+    from app.services.payment_service import PaymentService
+
+    h = harness
+    async with app.db.session_factory.begin() as s:
+        client = await ClientService(s).create("Клиент")
+        billing = BillingService(s)
+        for month, amount, payment in [(1, "1000.50", "300.25"), (2, "2000", "2000")]:
+            invoice = await billing.get_or_create_period(client.id, 2025, month)
+            await billing.add_manual_item(invoice.id, "Работа", Decimal(amount))
+            await billing.issue(invoice)
+            await PaymentService(s).add_payment(invoice.id, payment)
+        draft = await billing.get_or_create_period(client.id, 2026, 1)
+        await billing.add_manual_item(draft.id, "Черновик", Decimal("400"))
+        for month, status in [(2, BillingStatus.CANCELLED), (3, BillingStatus.SUPERSEDED)]:
+            ignored = await billing.get_or_create_period(client.id, 2026, month)
+            await billing.add_manual_item(ignored.id, "История", Decimal("9000"))
+            ignored.status = status.value
+        before = await s.scalar(select(func.count()).select_from(BillingPeriod))
+    for entry in ["/start", "/cancel", "/menu", "/help"]:
+        await h.send(entry)
+        assert "Активных задач нет" in h.last.text
+        assert "Начислено: 3 400.50 ₽" in h.last.text
+        assert "Выставлено: 3 000.50 ₽" in h.last.text
+        assert "Оплачено: 2 300.25 ₽" in h.last.text
+        assert "Долг: 700.25 ₽" in h.last.text
+    async with app.db.session_factory() as s:
+        assert await s.scalar(select(func.count()).select_from(BillingPeriod)) == before
+
+
+@pytest.mark.parametrize("project_count", [0, 1, 2])
+async def test_known_forward_saves_task_and_selects_only_project(harness, project_count):
+    from app.services.client_service import ClientService
+    from app.services.project_service import ProjectService
+
+    h = harness
+    async with app.db.session_factory.begin() as s:
+        client = await ClientService(s).create("Known <client>", telegram_user_id=777)
+        projects = [
+            await ProjectService(s).create(client.id, f"Проект {i}") for i in range(project_count)
+        ]
+        archived = await ProjectService(s).create(client.id, "Архив")
+        await ProjectService(s).set_archived(archived.id, True)
+        cid = client.id
+    origin = {
+        "type": "user",
+        "date": datetime(2026, 1, 2, tzinfo=timezone.utc),
+        "sender_user": {"id": 777, "is_bot": False, "first_name": "Known"},
+    }
+    await h.send("Перенести <домен>\nПодробности & доступ", origin=origin)
+    if project_count > 1:
+        assert "Выберите проект" in h.last.text
+        async with app.db.session_factory() as s:
+            assert await s.scalar(select(func.count()).select_from(Task)) == 1
+        await h.click("Проект 1")
+    assert "Перенести &lt;домен&gt;" in h.last.text
+    assert h.button("Главное меню") == "main"
+    async with app.db.session_factory() as s:
+        task = await s.scalar(select(Task))
+        tid = task.id
+        assert task.client_id == cid
+        assert task.project_id == (projects[-1].id if projects else None)
+        assert task.status == "NEW" and task.amount == 0
+        assert task.title == "Перенести <домен>"
+        assert (
+            task.description
+            == task.source.original_text
+            == "Перенести <домен>\nПодробности & доступ"
+        )
+        assert task.source.forwarded_user_id == 777
+    await h.click("Цена")
+    await h.send("19500")
+    await h.click("Главное меню")
+    assert "Активные задачи: 1" in h.last.text and "19 500 ₽" in h.last.text
+    await h.send("Перенести <домен>\nПодробности & доступ", origin=origin)
+    assert "уже создана задача" in h.last.text
+    async with app.db.session_factory() as s:
+        assert await s.scalar(select(func.count()).select_from(Task)) == 1
+        assert (await s.get(Task, tid)).amount == Decimal("19500")
+
+
+async def test_forward_burst_stays_one_task_while_selecting_project(harness):
+    from app.models.task import TaskForwardMessage
+    from app.services.client_service import ClientService
+    from app.services.project_service import ProjectService
+
+    h = harness
+    async with app.db.session_factory.begin() as s:
+        client = await ClientService(s).create("Client", telegram_user_id=777)
+        for number in range(7):
+            await ProjectService(s).create(client.id, f"Проект {number}")
+    start = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+    origin = {
+        "type": "user",
+        "date": datetime(2020, 1, 1, tzinfo=timezone.utc),
+        "sender_user": {"id": 777, "is_bot": False, "first_name": "Client"},
+    }
+    await h.send("Первая часть", origin=origin, received_at=start)
+    await h.send("Вторая часть", origin=origin, received_at=start + timedelta(seconds=4))
+    assert "Добавлено к задаче" in h.last.text
+    assert "Первая часть" in h.last.text and "Вторая часть" in h.last.text
+    await h.click("➡️")
+    await h.click("Проект 6")
+    assert "Проект: Проект 6" in h.last.text
+    await h.send("Третья часть", origin=origin, received_at=start + timedelta(seconds=8))
+    assert "Добавлено к задаче" in h.last.text and "Проект: Проект 6" in h.last.text
+    await h.send("Другая задача", origin=origin, received_at=start + timedelta(seconds=13))
+    assert "Создано" in h.last.text
+    await h.click("Без проекта")
+    await h.send("Вторая часть", origin=origin, received_at=start + timedelta(seconds=20))
+    assert "уже создана задача" in h.last.text
+    async with app.db.session_factory() as s:
+        tasks = list((await s.scalars(select(Task).order_by(Task.id))).all())
+        assert len(tasks) == 2
+        assert tasks[0].description == "Первая часть\n\nВторая часть\n\nТретья часть"
+        assert tasks[0].project_id is not None and tasks[1].project_id is None
+        assert await s.scalar(select(func.count()).select_from(TaskForwardMessage)) == 4

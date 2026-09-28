@@ -5,9 +5,11 @@ from html import escape
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, ErrorEvent, Message
 
 from app import keyboards as kb
+from app.handlers.common import on_start
 from app.services.errors import (
     AlreadyExistsError,
     DomainError,
@@ -66,8 +68,5 @@ async def on_stale_callback(query: CallbackQuery) -> None:
 
 
 @router.message()
-async def on_unhandled_message(message: Message) -> None:
-    await message.answer(
-        "Перешлите сообщение клиента или выберите раздел. /cancel — отменить ввод.",
-        reply_markup=kb.main_menu(),
-    )
+async def on_unhandled_message(message: Message, state: FSMContext) -> None:
+    await on_start(message, state)

@@ -102,6 +102,24 @@ class DashboardService:
                 debt += totals.debt
         return MonthStats(accrued=accrued, issued=issued, paid=paid, debt=debt)
 
+    async def overall_stats(self) -> MonthStats:
+        """Read saved invoices across all months without generating new charges."""
+        periods = await self.session.scalars(
+            select(BillingPeriod).where(
+                BillingPeriod.status.in_((BillingStatus.DRAFT.value, *ISSUED_STATUSES))
+            )
+        )
+        accrued = issued = paid = debt = Decimal("0")
+        for period in periods:
+            invoice = sum((item.amount for item in period.items), Decimal("0"))
+            accrued += invoice
+            if period.status in ISSUED_STATUSES:
+                period_paid = sum((payment.amount for payment in period.payments), Decimal("0"))
+                issued += invoice
+                paid += period_paid
+                debt += max(Decimal("0"), invoice - period_paid)
+        return MonthStats(accrued=accrued, issued=issued, paid=paid, debt=debt)
+
     async def total_debt(self, client_id: int) -> Decimal:
         stmt = (
             select(BillingPeriod)
