@@ -24,12 +24,14 @@ GOOD = {
         {"headSha": OLD},
         {"headBranch": "feature"},
         {"event": "pull_request"},
+        {"event": "pull_request_target"},
+        {"event": "repository_dispatch"},
         {"status": "in_progress"},
         {"conclusion": "failure"},
         {"conclusion": "cancelled"},
     ],
 )
-def test_only_exact_successful_main_push_is_accepted(change):
+def test_only_exact_successful_main_run_is_accepted(change):
     assert not ci_passed([GOOD | change], NEW)
 
 
@@ -153,3 +155,23 @@ def test_schema_change_prevents_unsafe_automatic_rollback(tmp_path, monkeypatch)
     assert deployer.head == NEW
     assert ("ready", "old-image") not in deployer.calls
     assert not any("pg_restore" in call for call in deployer.calls)
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_successful_push_and_manual_run_are_accepted(event):
+    assert ci_passed([GOOD | {"event": event}], NEW)
+    assert not ci_passed([GOOD | {"event": event, "headSha": OLD}], NEW)
+    assert not ci_passed([GOOD | {"event": event, "headBranch": "feature"}], NEW)
+    assert not ci_passed([GOOD | {"event": event, "conclusion": "failure"}], NEW)
+    assert not ci_passed([GOOD | {"event": event, "status": "in_progress"}], NEW)
+
+
+def test_manual_ci_is_included_in_deployer_lookup(tmp_path, monkeypatch):
+    deployer = SimulatedDeployer(tmp_path, monkeypatch)
+    deployer.runs = [GOOD | {"event": "workflow_dispatch"}]
+    deployer.deploy(check=True)
+    args = deployer.calls[0]
+    assert "--event" not in args
+    assert args[args.index("--commit") + 1] == NEW
+    assert args[args.index("--branch") + 1] == "main"
+    assert args[args.index("--workflow") + 1] == "ci.yml"
