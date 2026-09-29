@@ -19,16 +19,19 @@ def log(message: str) -> None:
 
 
 def ci_passed(runs: list[dict], sha: str) -> bool:
-    # Only the latest push run for this exact main commit is authoritative.
-    return bool(runs) and all(
-        runs[0].get(key) == value
-        for key, value in {
-            "headSha": sha,
-            "headBranch": "main",
-            "event": "push",
-            "status": "completed",
-            "conclusion": "success",
-        }.items()
+    # Only the latest trusted run for this exact main commit is authoritative.
+    return (
+        bool(runs)
+        and runs[0].get("event") in ("push", "workflow_dispatch")
+        and all(
+            runs[0].get(key) == value
+            for key, value in {
+                "headSha": sha,
+                "headBranch": "main",
+                "status": "completed",
+                "conclusion": "success",
+            }.items()
+        )
     )
 
 
@@ -210,8 +213,6 @@ class Deployer:
                     "ci.yml",
                     "--branch",
                     "main",
-                    "--event",
-                    "push",
                     "--commit",
                     candidate,
                     "--limit",
@@ -222,7 +223,7 @@ class Deployer:
             )
         )
         if not ci_passed(runs, candidate):
-            log(f"Waiting for successful main push CI: {candidate}")
+            log(f"Waiting for successful main CI: {candidate}")
             return
         if check:
             log(f"Ready to deploy: {candidate}; CI: {runs[0]['url']}")
