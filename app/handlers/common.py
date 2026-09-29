@@ -42,7 +42,7 @@ async def main_screen(page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
             stats = await DashboardService(session).overall_stats()
             text = (
                 "🏠 <b>Главное меню</b>\n\nАктивных задач нет.\n\n"
-                "💰 <b>Финансы за всё время</b>\nПо сохранённым счетам, включая черновики.\n"
+                "💰 <b>Финансы за всё время</b>\nВсе счета, включая черновики.\n"
                 f"Начислено: {format_money(stats.accrued)}\n"
                 f"Выставлено: {format_money(stats.issued)}\n"
                 f"Оплачено: {format_money(stats.paid)}\n"

@@ -123,3 +123,23 @@ class Payment(TimestampMixin, Base):
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     period: Mapped["BillingPeriod"] = relationship(back_populates="payments")
+
+
+class InvoiceItemCorrection(TimestampMixin, Base):
+    """Explicit owner corrections; the original invoice snapshot stays intact."""
+
+    __tablename__ = "invoice_item_corrections"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="ck_invoice_correction_amount"),
+        Index("ix_invoice_item_corrections_item_id", "invoice_item_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    invoice_item_id: Mapped[int] = mapped_column(
+        ForeignKey("invoice_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    previous_description: Mapped[str] = mapped_column(Text, nullable=False)
+    previous_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    operation_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)

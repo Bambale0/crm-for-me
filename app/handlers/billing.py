@@ -18,7 +18,7 @@ from app.services.dashboard_service import DashboardService
 from app.services.errors import InvalidAmountError
 from app.services.payment_service import PaymentService
 from app.services.search_service import SearchService
-from app.states import PaymentFlow, SearchFlow
+from app.states import InvoiceItemEdit, PaymentFlow, SearchFlow
 from app.utils.money import format_money, to_decimal
 from app.utils.time import format_local, month_label
 
@@ -45,7 +45,10 @@ async def _period_text(session, period) -> tuple[str, str, Totals]:
     ]
     items = await svc.items(period)
     for item in items[:8]:
-        lines.append(f"• {escape(item.description[:180])} — {format_money(item.amount, 'RUB')}")
+        mark = "✏️" if item.correction_id else "•"
+        lines.append(
+            f"{mark} {escape(item.description[:180])} — {format_money(item.amount, 'RUB')}"
+        )
     if len(items) > 8:
         lines.append(f"Ещё позиций: {len(items) - 8}. Откройте список позиций ниже.")
     lines.append("")
@@ -195,13 +198,15 @@ async def on_pay(query: CallbackQuery, state: FSMContext) -> None:
     async with session_scope() as session:
         svc = BillingService(session)
         period = await svc.get_period(period_id)
-        totals = await svc.ensure_payable(period)
+        totals = await svc.ensure_payable(period, allow_draft=True)
     await state.clear()
     await state.update_data(pay_period_id=period_id, pay_key=uuid4().hex)
     await state.set_state(PaymentFlow.waiting_amount)
     await query.answer()
     await query.message.edit_text(
-        f"Долг: {format_money(totals.debt)}. Введите сумму оплаты:", reply_markup=kb.back_to_main()
+        f"Долг: {format_money(totals.debt)}. Введите сумму оплаты:"
+        + ("\nПри сохранении оплаты черновик будет выставлен." if period.status == "DRAFT" else ""),
+        reply_markup=kb.back_to_main(),
     )
 
 
@@ -213,7 +218,7 @@ async def on_pay_amount(message: Message, state: FSMContext) -> None:
     async with session_scope() as session:
         svc = BillingService(session)
         await PaymentService(session).add_payment(
-            period_id, amount, idempotency_key=data["pay_key"]
+            period_id, amount, idempotency_key=data["pay_key"], issue_draft=True
         )
         period = await svc.get_period(period_id)
         text, status, totals = await _period_text(session, period)
@@ -237,11 +242,10 @@ async def on_financial_list(query: CallbackQuery) -> None:
     async with session_scope() as session:
         svc = BillingService(session)
         period = await svc.get_period(int(pid))
+        items = []
         if kind == "invoice_items":
-            rows = [
-                f"{escape(i.description[:600])} — {format_money(i.amount)}"
-                for i in await svc.items(period)
-            ]
+            items = await svc.items(period)
+            rows = [f"{escape(i.description[:600])} — {format_money(i.amount)}" for i in items]
         else:
             from app.utils.time import format_local
 
@@ -256,6 +260,11 @@ async def on_financial_list(query: CallbackQuery) -> None:
     if (page + 1) * 4 < len(rows):
         nav.append(("➡️", f"{kind}:{pid}:{page + 1}"))
     buttons = [nav] if nav else []
+    if kind == "invoice_items":
+        buttons = [
+            [(f"✏️ {i.description[:45]}", f"invoice_item:{i.id}")]
+            for i in items[page * 4 : (page + 1) * 4]
+        ] + buttons
     if kind == "invoice_items" and period.status in ("DRAFT", "ISSUED"):
         buttons.append([("🧩 Объединить позиции", f"transfer_start:{period.id}")])
     buttons.append([("⬅️ Счёт", f"invoice:{period.id}")])
@@ -288,7 +297,7 @@ async def _show_month(query: CallbackQuery, year: int, month: int) -> None:
         f"Начислено: {format_money(stats.accrued, 'RUB')}\n"
         f"Выставлено: {format_money(stats.issued, 'RUB')}\n"
         f"Оплачено: {format_money(stats.paid, 'RUB')}\n"
-        f"Долг: {format_money(stats.debt, 'RUB')}"
+        f"Долг: {format_money(stats.debt, 'RUB')}\nВключая черновики."
     )
     await query.message.edit_text(text, reply_markup=kb.month_nav(year, month))
     await query.answer()
@@ -373,4 +382,141 @@ async def on_month_clients(query: CallbackQuery) -> None:
     await query.message.edit_text(
         f"{month_label(year, month)} — счета по клиентам:",
         reply_markup=kb.paged(entries, f"month_clients:{year}:{month}", page),
+    )
+
+
+@router.callback_query(F.data.startswith("invoice_item:"))
+async def on_invoice_item(query: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    async with session_scope() as session:
+        svc = BillingService(session)
+        item = await svc.item(int(query.data.split(":")[1]))
+        period = await svc.get_period(item.billing_period_id)
+    rows = []
+    if period.status in ("DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID"):
+        rows.append(
+            [
+                ("✏️ Название", f"invoice_item_edit:{item.id}:description"),
+                ("💰 Сумма", f"invoice_item_edit:{item.id}:amount"),
+            ]
+        )
+    rows.append([("История изменений", f"invoice_item_history:{item.id}:0")])
+    rows.append([("⬅️ Счёт", f"invoice:{period.id}")])
+    await query.answer()
+    await query.message.edit_text(
+        f"Позиция счёта #{period.id}\n{escape(item.description[:600])}\n{format_money(item.amount)}",
+        reply_markup=kb.buttons(rows),
+    )
+
+
+@router.callback_query(F.data.startswith("invoice_item_edit:"))
+async def on_invoice_item_edit(query: CallbackQuery, state: FSMContext) -> None:
+    _, iid, field = query.data.split(":")
+    if field not in ("description", "amount"):
+        raise ValueError("Неизвестное поле")
+    async with session_scope() as session:
+        item = await BillingService(session).item(int(iid))
+    await state.clear()
+    await state.update_data(
+        item_edit_id=item.id,
+        item_edit_field=field,
+        item_description=item.description,
+        item_amount=str(item.amount),
+        item_revision=item.correction_id,
+        item_edit_key=uuid4().hex,
+    )
+    await state.set_state(InvoiceItemEdit.value)
+    await query.answer()
+    await query.message.edit_text(
+        "Введите новое название позиции:"
+        if field == "description"
+        else "Введите новую сумму позиции, ₽:",
+        reply_markup=kb.buttons([[("Отмена", f"invoice_item:{item.id}")]]),
+    )
+
+
+@router.message(InvoiceItemEdit.value)
+async def on_invoice_item_value(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    value = (message.text or "").strip()
+    if data["item_edit_field"] == "amount":
+        amount = str(to_decimal(value))
+        description = data["item_description"]
+    else:
+        if not 1 <= len(value) <= 600:
+            raise ValueError("Название: от 1 до 600 символов")
+        amount, description = data["item_amount"], value
+    await state.update_data(item_new_amount=amount, item_new_description=description)
+    await state.set_state(InvoiceItemEdit.confirm)
+    await message.answer(
+        f"Было: {escape(data['item_description'][:600])} — {format_money(to_decimal(data['item_amount']))}\n"
+        f"Станет: {escape(description)} — {format_money(to_decimal(amount))}\n\n"
+        "Сохранить корректировку? Исходные данные останутся в истории.",
+        reply_markup=kb.buttons(
+            [
+                [
+                    ("Сохранить", f"invoice_item_save:{data['item_edit_key']}"),
+                    ("Отмена", f"invoice_item:{data['item_edit_id']}"),
+                ]
+            ]
+        ),
+    )
+
+
+@router.callback_query(InvoiceItemEdit.confirm, F.data.startswith("invoice_item_save:"))
+async def on_invoice_item_save(query: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if query.data.split(":")[1] != data.get("item_edit_key"):
+        raise ValueError("Откройте корректировку заново")
+    async with session_scope() as session:
+        svc = BillingService(session)
+        await svc.correct_item(
+            data["item_edit_id"],
+            description=data["item_new_description"],
+            amount=data["item_new_amount"],
+            key=data["item_edit_key"],
+            expected_revision=data["item_revision"],
+            expected_amount=data["item_amount"],
+            expected_description=data["item_description"],
+        )
+        item = await svc.item(data["item_edit_id"])
+        period = await svc.get_period(item.billing_period_id)
+        text, status, totals = await _period_text(session, period)
+    await state.clear()
+    await query.answer("Корректировка сохранена")
+    await query.message.edit_text(
+        text,
+        reply_markup=kb.billing_actions(
+            period.id,
+            status,
+            period.client_id,
+            invoice_total=totals.invoice_total,
+            debt=totals.debt,
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("invoice_item_history:"))
+async def on_invoice_item_history(query: CallbackQuery) -> None:
+    _, iid, page = query.data.split(":")
+    page = max(0, int(page))
+    async with session_scope() as session:
+        svc = BillingService(session)
+        item = await svc.item(int(iid))
+        changes = await svc.billing.correction_history(item.id)
+    entries = [
+        f"{format_local(c.created_at, get_settings().timezone)}\n"
+        f"{escape(c.previous_description[:180])} — {format_money(c.previous_amount)}\n"
+        f"→ {escape(c.description[:180])} — {format_money(c.amount)}"
+        for c in changes
+    ]
+    nav = []
+    if page:
+        nav.append(("⬅️", f"invoice_item_history:{iid}:{page - 1}"))
+    if (page + 1) * 4 < len(entries):
+        nav.append(("➡️", f"invoice_item_history:{iid}:{page + 1}"))
+    await query.answer()
+    await query.message.edit_text(
+        "\n\n".join(entries[page * 4 : (page + 1) * 4]) or "Корректировок пока нет.",
+        reply_markup=kb.buttons(([nav] if nav else []) + [[("⬅️ Позиция", f"invoice_item:{iid}")]]),
     )

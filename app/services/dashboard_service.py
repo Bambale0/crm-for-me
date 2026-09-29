@@ -78,7 +78,7 @@ class DashboardService:
             if period.status in ISSUED_STATUSES:
                 issued += invoice
                 paid += period_paid
-                debt += max(Decimal("0"), invoice - period_paid)
+            debt += max(Decimal("0"), invoice - period_paid)
 
         return MonthStats(accrued=accrued, issued=issued, paid=paid, debt=debt)
 
@@ -99,7 +99,7 @@ class DashboardService:
             if period.status in ISSUED_STATUSES:
                 issued += totals.invoice_total
                 paid += totals.paid_total
-                debt += totals.debt
+            debt += totals.debt
         return MonthStats(accrued=accrued, issued=issued, paid=paid, debt=debt)
 
     async def overall_stats(self) -> MonthStats:
@@ -111,20 +111,20 @@ class DashboardService:
         )
         accrued = issued = paid = debt = Decimal("0")
         for period in periods:
-            invoice = sum((item.amount for item in period.items), Decimal("0"))
+            invoice = await self.billing_repo.invoice_total(period.id)
             accrued += invoice
+            period_paid = await self.billing_repo.paid_total(period.id)
             if period.status in ISSUED_STATUSES:
-                period_paid = sum((payment.amount for payment in period.payments), Decimal("0"))
                 issued += invoice
                 paid += period_paid
-                debt += max(Decimal("0"), invoice - period_paid)
+            debt += max(Decimal("0"), invoice - period_paid)
         return MonthStats(accrued=accrued, issued=issued, paid=paid, debt=debt)
 
     async def total_debt(self, client_id: int) -> Decimal:
         stmt = (
             select(BillingPeriod)
             .where(BillingPeriod.client_id == client_id)
-            .where(BillingPeriod.status.in_(ISSUED_STATUSES))
+            .where(BillingPeriod.status.in_((BillingStatus.DRAFT.value, *ISSUED_STATUSES)))
         )
         periods = list((await self.session.scalars(stmt)).all())
         debt = Decimal("0")

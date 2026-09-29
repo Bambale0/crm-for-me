@@ -672,7 +672,7 @@ async def test_empty_home_money_totals_across_months_without_double_count(harnes
         assert "Начислено: 3 400.50 ₽" in h.last.text
         assert "Выставлено: 3 000.50 ₽" in h.last.text
         assert "Оплачено: 2 300.25 ₽" in h.last.text
-        assert "Долг: 700.25 ₽" in h.last.text
+        assert "Долг: 1 100.25 ₽" in h.last.text
     async with app.db.session_factory() as s:
         assert await s.scalar(select(func.count()).select_from(BillingPeriod)) == before
 
@@ -764,3 +764,107 @@ async def test_forward_burst_stays_one_task_while_selecting_project(harness):
         assert tasks[0].description == "Первая часть\n\nВторая часть\n\nТретья часть"
         assert tasks[0].project_id is not None and tasks[1].project_id is None
         assert await s.scalar(select(func.count()).select_from(TaskForwardMessage)) == 4
+
+
+async def test_draft_debt_visible_and_partial_payment_directly_from_draft(harness):
+    from app.services.client_service import ClientService
+
+    h = harness
+    async with app.db.session_factory.begin() as s:
+        cid = (await ClientService(s).create("Client")).id
+        billing = BillingService(s)
+        invoice = await billing.current_period(cid, "UTC")
+        await billing.add_manual_item(invoice.id, "Работа", Decimal("70000"))
+        pid = invoice.id
+    await h.send("/start")
+    assert "Долг: 70 000 ₽" in h.last.text
+    await h.send(callback=f"invoice:{pid}")
+    await h.click("Принять оплату")
+    await h.send("20000")
+    assert "Частично оплачен" in h.last.text
+    assert "Оплачено: 20 000 ₽" in h.last.text and "Долг: 50 000 ₽" in h.last.text
+    await h.send("/start")
+    assert "Долг: 50 000 ₽" in h.last.text
+    await h.click("Дашборд")
+    assert "Долг: 50 000 ₽" in h.last.text
+
+
+async def test_invoice_position_can_be_corrected_with_history_after_payment(harness):
+    from app.services.client_service import ClientService
+    from app.services.payment_service import PaymentService
+
+    h = harness
+    async with app.db.session_factory.begin() as s:
+        cid = (await ClientService(s).create("Client")).id
+        billing = BillingService(s)
+        invoice = await billing.current_period(cid, "UTC")
+        item = await billing.add_manual_item(invoice.id, "70000", Decimal("70000"))
+        await PaymentService(s).add_payment(invoice.id, "20000", issue_draft=True)
+        pid, iid = invoice.id, item.id
+    await h.send(callback=f"invoice:{pid}")
+    await h.click("Корректировать счёт")
+    await h.click("70000")
+    await h.click("Название")
+    await h.send("Разработка <сайта>")
+    await h.click("Сохранить")
+    assert "Разработка &lt;сайта&gt;" in h.last.text and "Долг: 50 000 ₽" in h.last.text
+    await h.send(callback=f"invoice_item:{iid}")
+    await h.click("Сумма")
+    await h.send("65000")
+    await h.click("Сохранить")
+    assert "Долг: 45 000 ₽" in h.last.text
+    await h.send(callback=f"invoice_item:{iid}")
+    await h.click("История изменений")
+    assert "70 000 ₽" in h.last.text and "65 000 ₽" in h.last.text
+    await h.send("/start")
+    assert "Долг: 45 000 ₽" in h.last.text
+
+
+async def test_server_ip_monthly_amount_edit_and_no_double_billing(harness):
+    from app.config import get_settings
+    from app.models.recurring import RecurringCharge
+    from app.services.client_service import ClientService
+    from app.services.recurring_service import RecurringService
+    from app.utils.time import current_month
+
+    h = harness
+    async with app.db.session_factory.begin() as s:
+        cid = (await ClientService(s).create("Client")).id
+    await h.send("/start")
+    await h.click("Серверы")
+    await h.click("➕ Сервер")
+    await h.click("Client")
+    await h.send("not-an-ip")
+    assert "IPv4 или IPv6" in h.last.text
+    await h.send("192.0.2.10")
+    await h.send("3000")
+    await h.click("Сервер")
+    assert "192.0.2.10" in h.last.text and "3 000 ₽ / месяц" in h.last.text
+    async with app.db.session_factory.begin() as s:
+        charge = await s.scalar(select(RecurringCharge))
+        assert charge.server_ip == "192.0.2.10" and charge.amount == 3000
+        billing = BillingService(s)
+        month = current_month(get_settings().timezone)
+        await billing.generate_month(*month)
+        invoice = (await billing.list_for_client(cid))[0]
+        assert len(await billing.items(invoice)) == 1
+        assert (await billing.totals(invoice)).invoice_total == 3000
+        await billing.issue(invoice)
+        pid, charge_id = invoice.id, charge.id
+    await h.click("IP")
+    await h.send("2001:db8::1")
+    await h.click("Сервер")
+    assert "2001:db8::1" in h.last.text
+    await h.click("Изменить цену")
+    await h.send("4000")
+    async with app.db.session_factory.begin() as s:
+        billing = BillingService(s)
+        invoice = await billing.get_period(pid)
+        assert (await billing.totals(invoice)).invoice_total == 3000
+        assert (await billing.items(invoice))[0].description == "Сервер 192.0.2.10"
+        assert (await RecurringService(s).get(charge_id)).amount == 4000
+        year, month_no = month
+        next_year, next_month = (year + 1, 1) if month_no == 12 else (year, month_no + 1)
+        await billing.generate_month(next_year, next_month, cid)
+        next_invoice = await billing.get_or_create_period(cid, next_year, next_month)
+        assert (await billing.totals(next_invoice)).invoice_total == 4000

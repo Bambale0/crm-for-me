@@ -58,6 +58,7 @@ def main_menu(tasks=(), page: int = 0) -> InlineKeyboardMarkup:
         [
             [("👥 Клиенты", CLIENTS), ("🔎 Поиск", SEARCH)],
             [("📊 Дашборд", "dashboard"), ("⏰ Напоминания", "reminders:0")],
+            [("🖥 Серверы", "servers:0:0")],
         ],
     )
 
@@ -82,6 +83,7 @@ def client_card(client_id: int, forward_token: str | None = None) -> InlineKeybo
             [("➕ Дозаказ", start)],
             [("📁 Проекты", f"projects:{client_id}"), ("✅ Задачи", f"tasks:{client_id}")],
             [("🧾 Счета", f"billing:{client_id}"), ("🔁 Услуги", f"recurring:{client_id}:0")],
+            [("🖥 Сервер", f"servers:{client_id}:0")],
             [("📝 Данные и заметки", f"details:client:{client_id}"), ("🏠 В меню", MAIN)],
         ]
     )
@@ -162,11 +164,13 @@ def billing_actions(
     rows = []
     if status == "DRAFT" and invoice_total > 0:
         rows.append([("🧾 Выставить счёт", f"billing_issue_ask:{period_id}")])
-    if status in ("ISSUED", "PARTIALLY_PAID") and debt > 0:
+    if status in ("DRAFT", "ISSUED", "PARTIALLY_PAID") and debt > 0:
         rows.append([("💳 Принять оплату", f"pay:{period_id}")])
     rows.append(
         [("📋 Позиции", f"invoice_items:{period_id}:0"), ("💳 Оплаты", f"payments:{period_id}:0")]
     )
+    if status in ("DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID"):
+        rows.append([("✏️ Корректировать счёт", f"invoice_items:{period_id}:0")])
     if status in ("DRAFT", "ISSUED"):
         rows.append([("🧩 Объединить позиции", f"transfer_start:{period_id}")])
     if status == "SUPERSEDED":

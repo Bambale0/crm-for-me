@@ -37,6 +37,7 @@ class RecurringCharge(TimestampMixin, Base):
         ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
     )
 
+    server_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="RUB")

@@ -54,3 +54,13 @@ class ReminderFlow(StatesGroup):
 class InvoiceTransferFlow(StatesGroup):
     selecting = State()
     confirming = State()
+
+
+class ServerFlow(StatesGroup):
+    ip = State()
+    amount = State()
+
+
+class InvoiceItemEdit(StatesGroup):
+    value = State()
+    confirm = State()

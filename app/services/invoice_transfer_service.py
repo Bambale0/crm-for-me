@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.models.billing import BillingPeriod, InvoiceItem
+from app.repositories.billing import ItemView
 from app.services.billing_service import BillingService
 from app.services.validation import lock_client
 from app.utils.time import now_utc
@@ -27,8 +28,8 @@ def digest(value) -> str:
 class TransferPreview:
     target: BillingPeriod
     invoices: dict[int, BillingPeriod]
-    items: dict[int, list[InvoiceItem]]
-    selected: list[InvoiceItem]
+    items: dict[int, list[ItemView]]
+    selected: list[ItemView]
     fingerprint: str
 
     @property
@@ -45,7 +46,7 @@ class InvoiceTransferService:
         if invoice.status not in TRANSFERABLE or await self.billing.billing.paid_total(invoice.id):
             raise ValueError("Объединять можно только черновики и выставленные счета без оплат.")
 
-    async def candidates(self, target_id: int) -> list[InvoiceItem]:
+    async def candidates(self, target_id: int) -> list[ItemView]:
         target = await self.billing.lock_period(target_id)
         await self._eligible(target)
         result = []

@@ -32,6 +32,7 @@ class PaymentService:
         paid_at: datetime | None = None,
         comment: str | None = None,
         idempotency_key: str | None = None,
+        issue_draft: bool = False,
     ) -> Payment:
         amount = to_decimal(amount)
         currency = validate_currency(currency)
@@ -51,7 +52,7 @@ class PaymentService:
         if period.status not in (
             BillingStatus.ISSUED.value,
             BillingStatus.PARTIALLY_PAID.value,
-        ):
+        ) and not (issue_draft and period.status == BillingStatus.DRAFT.value):
             raise InvalidTransitionError(
                 f"Cannot pay a period in status {period.status}; issue it first"
             )
@@ -59,10 +60,13 @@ class PaymentService:
         if amount <= 0:
             raise InvalidAmountError("Сумма оплаты должна быть больше 0 ₽.")
 
-        totals = await self.billing.ensure_payable(period)
+        totals = await self.billing.ensure_payable(period, allow_draft=issue_draft)
         remaining = totals.invoice_total - totals.paid_total
         if amount > remaining:
             raise OverpaymentError(f"Payment {amount} exceeds remaining debt {remaining}")
+
+        if period.status == BillingStatus.DRAFT.value:
+            await self.billing.issue(period)
 
         payment = Payment(
             billing_period_id=period_id,
