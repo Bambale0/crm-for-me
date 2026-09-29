@@ -29,7 +29,7 @@ async def _client_card_text(session, client) -> str:
     lines = [
         f"👤 <b>{escape(client.display_name)}</b>",
         f"📅 {month_label(year, month)}: {format_money(stats.accrued)}",
-        f"💰 Долг по выставленным счетам: {format_money(debt)}",
+        f"💰 Долг по всем счетам: {format_money(debt)}",
         f"Активных задач: {active}",
     ]
     if client.telegram_username:

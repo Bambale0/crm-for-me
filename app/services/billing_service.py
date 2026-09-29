@@ -11,11 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.billing import BillingPeriod, InvoiceItem
+from app.models.billing import BillingPeriod, InvoiceItem, InvoiceItemCorrection
 from app.models.enums import BillingStatus, InvoiceItemSource, TaskStatus
 from app.models.recurring import RecurringCharge
 from app.models.task import Task
-from app.repositories.billing import BillingRepository
+from app.repositories.billing import BillingRepository, ItemView
 from app.services.errors import InvalidAmountError, InvalidTransitionError, NotFoundError
 from app.services.validation import lock_client
 from app.utils.money import to_decimal
@@ -167,6 +167,15 @@ class BillingService:
             )
 
         items = await self.billing.list_items(period.id)
+        corrected_ids = set(
+            (
+                await self.session.scalars(
+                    select(InvoiceItemCorrection.invoice_item_id)
+                    .join(InvoiceItem, InvoiceItem.id == InvoiceItemCorrection.invoice_item_id)
+                    .where(InvoiceItem.billing_period_id == period.id)
+                )
+            ).all()
+        )
         by_source = {
             (item.source_type, item.source_id): item for item in items if item.source_id is not None
         }
@@ -184,7 +193,9 @@ class BillingService:
                     amount=amount,
                 )
                 await self.billing.add_item(item)
-            elif item.description != description or item.amount != amount:
+            elif item.id not in corrected_ids and (
+                item.description != description or item.amount != amount
+            ):
                 item.description = description
                 item.unit_price = amount
                 item.amount = amount
@@ -197,6 +208,7 @@ class BillingService:
                     InvoiceItemSource.RECURRING_CHARGE.value,
                 )
                 and (source_type, source_id) not in desired
+                and item.id not in corrected_ids
             ):
                 await self.session.delete(item)
 
@@ -271,11 +283,16 @@ class BillingService:
         await self.session.flush()
         return period
 
-    async def ensure_payable(self, period: BillingPeriod) -> Totals:
+    async def ensure_payable(self, period: BillingPeriod, *, allow_draft: bool = False) -> Totals:
+        if allow_draft and period.status == BillingStatus.DRAFT.value:
+            await self.reconcile_draft(period)
         totals = await self.totals(period)
         if totals.debt <= 0:
             raise ValueError("Долга нет — оплата по этому счёту не требуется.")
-        if period.status not in (BillingStatus.ISSUED.value, BillingStatus.PARTIALLY_PAID.value):
+        allowed = (BillingStatus.ISSUED.value, BillingStatus.PARTIALLY_PAID.value)
+        if allow_draft:
+            allowed += (BillingStatus.DRAFT.value,)
+        if period.status not in allowed:
             raise ValueError("Сначала выставьте счёт, затем внесите оплату.")
         return totals
 
@@ -290,8 +307,8 @@ class BillingService:
         )
         return Totals(invoice_total=invoice, paid_total=paid, debt=debt)
 
-    async def items(self, period: BillingPeriod) -> list[InvoiceItem]:
-        return await self.billing.list_items(period.id)
+    async def items(self, period: BillingPeriod) -> list[ItemView]:
+        return await self.billing.effective_items(period.id)
 
     async def payments(self, period: BillingPeriod) -> list:
         return await self.billing.list_payments(period.id)
@@ -307,3 +324,82 @@ class BillingService:
     @staticmethod
     def period_key(dt: datetime, tz_name: str) -> tuple[int, int]:
         return local_month(dt, tz_name)
+
+    async def item(self, item_id: int) -> ItemView:
+        raw = await self.session.get(InvoiceItem, item_id)
+        if raw is None:
+            raise NotFoundError("Позиция не найдена")
+        item = next(
+            (
+                i
+                for i in await self.billing.effective_items(raw.billing_period_id)
+                if i.id == item_id
+            ),
+            None,
+        )
+        if item is None:
+            raise NotFoundError("Позиция не найдена")
+        return item
+
+    async def correct_item(
+        self,
+        item_id: int,
+        *,
+        description: str,
+        amount: Decimal | str,
+        key: str,
+        expected_revision: int,
+        expected_amount: str | None = None,
+        expected_description: str | None = None,
+    ) -> InvoiceItemCorrection:
+        description = description.strip()
+        amount = to_decimal(amount)
+        if not 1 <= len(description) <= 600 or not key or len(key) > 128:
+            raise ValueError("Название позиции: от 1 до 600 символов")
+        raw = await self.session.get(InvoiceItem, item_id)
+        if raw is None:
+            raise NotFoundError("Позиция не найдена")
+        period = await self.lock_period(raw.billing_period_id)
+        existing = await self.session.scalar(
+            select(InvoiceItemCorrection).where(InvoiceItemCorrection.operation_key == key)
+        )
+        if existing:
+            if (existing.invoice_item_id, existing.description, existing.amount) != (
+                item_id,
+                description,
+                amount,
+            ):
+                raise ValueError("Эта операция уже использована для другой корректировки")
+            return existing
+        if period.status not in ("DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID"):
+            raise ValueError("Этот счёт нельзя корректировать")
+        await self.reconcile_draft(period)
+        current = await self.item(item_id)
+        if (
+            current.correction_id != expected_revision
+            or (expected_amount is not None and current.amount != to_decimal(expected_amount))
+            or (expected_description is not None and current.description != expected_description)
+        ):
+            raise ValueError("Позиция уже изменена. Откройте её заново")
+        totals = await self.totals(period)
+        new_total = totals.invoice_total - current.amount + amount
+        if new_total < totals.paid_total:
+            raise ValueError("Сумма счёта не может быть меньше уже полученной оплаты")
+        correction = InvoiceItemCorrection(
+            invoice_item_id=item_id,
+            description=description,
+            amount=amount,
+            previous_description=current.description,
+            previous_amount=current.amount,
+            operation_key=key,
+        )
+        self.session.add(correction)
+        if period.status != "DRAFT":
+            if new_total == totals.paid_total:
+                period.status = "PAID"
+                period.closed_at = now_utc()
+            else:
+                period.status = "PARTIALLY_PAID" if totals.paid_total else "ISSUED"
+                period.closed_at = None
+        await self.session.flush()
+        return correction

@@ -366,3 +366,73 @@ async def test_concurrent_forward_group_is_one_task(engine, duplicate):
         task_count = await session.scalar(select(func.count()).select_from(Task))
     assert ids[0] == ids[1]
     assert task_count == 1 and count == (1 if duplicate else 2)
+
+
+async def test_concurrent_invoice_correction_and_payment_preserve_balance(engine):
+    factory, _, pid = await seed(engine)
+    async with factory() as session:
+        iid = (await BillingService(session).items(await BillingService(session).get_period(pid)))[
+            0
+        ].id
+    barrier = asyncio.Barrier(2)
+
+    async def correct():
+        try:
+            async with factory.begin() as session:
+                await barrier.wait()
+                await BillingService(session).correct_item(
+                    iid,
+                    description="Corrected",
+                    amount="5000",
+                    key="correction-race",
+                    expected_revision=0,
+                )
+            return "ok"
+        except ValueError:
+            return "rejected"
+
+    async def pay():
+        try:
+            async with factory.begin() as session:
+                await barrier.wait()
+                await PaymentService(session).add_payment(
+                    pid, "6000", idempotency_key="payment-race"
+                )
+            return "ok"
+        except OverpaymentError:
+            return "rejected"
+
+    results = await asyncio.wait_for(asyncio.gather(correct(), pay()), 10)
+    assert sorted(results) == ["ok", "rejected"]
+    async with factory() as session:
+        billing = BillingService(session)
+        totals = await billing.totals(await billing.get_period(pid))
+        assert totals.paid_total <= totals.invoice_total
+
+
+async def test_concurrent_same_invoice_correction_is_idempotent(engine):
+    from app.models.billing import InvoiceItemCorrection
+
+    factory, _, pid = await seed(engine)
+    async with factory() as session:
+        iid = (await BillingService(session).items(await BillingService(session).get_period(pid)))[
+            0
+        ].id
+    barrier = asyncio.Barrier(2)
+
+    async def correct():
+        async with factory.begin() as session:
+            await barrier.wait()
+            correction = await BillingService(session).correct_item(
+                iid,
+                description="Corrected",
+                amount="5000",
+                key="same-correction",
+                expected_revision=0,
+            )
+            return correction.id
+
+    ids = await asyncio.wait_for(asyncio.gather(correct(), correct()), 10)
+    async with factory() as session:
+        count = await session.scalar(select(func.count()).select_from(InvoiceItemCorrection))
+    assert ids[0] == ids[1] and count == 1

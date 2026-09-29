@@ -1,6 +1,6 @@
 """Models package — exports all mapped entities for Alembic autogenerate."""
 
-from app.models.billing import BillingPeriod, InvoiceItem, Payment
+from app.models.billing import BillingPeriod, InvoiceItem, InvoiceItemCorrection, Payment
 from app.models.client import Client, ClientField, ClientNote
 from app.models.project import Project, ProjectField, ProjectNote
 from app.models.recurring import RecurringCharge
@@ -20,6 +20,7 @@ __all__ = [
     "RecurringCharge",
     "BillingPeriod",
     "InvoiceItem",
+    "InvoiceItemCorrection",
     "Payment",
     "Reminder",
 ]
